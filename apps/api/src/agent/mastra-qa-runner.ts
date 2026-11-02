@@ -51,5 +51,8 @@ export class MastraQaRunner implements QaRunner {
     for await (const partial of output.objectStream) {
       yield partial as Partial<QaResult>
     }
+    if (output.error !== undefined) {
+      throw output.error
+    }
   }
 }

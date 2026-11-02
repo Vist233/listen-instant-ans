@@ -21,7 +21,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       endpoint: environment.ALIYUN_NLS_ENDPOINT ?? 'wss://nls-gateway.aliyuncs.com/ws/v1',
     },
     opencode: {
-      baseUrl: environment.OPENCODE_BASE_URL,
+      baseUrl: environment.OPENCODE_BASE_URL
+        ?? 'https://opencode.ai/inference/go/openai/v1',
       apiKey: environment.OPENCODE_API_KEY,
       model: environment.OPENCODE_MODEL ?? 'deepseek-4.1-flash',
     },
