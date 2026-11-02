@@ -4,6 +4,7 @@ import type { SessionController } from '../session/session-controller.js'
 
 export class VoiceSession {
   #sequence = 0
+  #stopping = false
 
   constructor(
     private readonly sessionId: string,
@@ -17,7 +18,16 @@ export class VoiceSession {
     this.transcriber.onFinal((final) => {
       this.controller.appendFinalTranscript(this.sessionId, { ...final, sequence: ++this.#sequence })
     })
-    this.microphone.onAudio((audio) => this.transcriber.sendAudio(audio))
+    this.microphone.onAudio((audio) => {
+      if (this.#stopping) return
+      try {
+        this.transcriber.sendAudio(audio)
+      } catch {
+        this.#stopping = true
+        this.microphone.stop()
+        this.controller.cancelActiveRun(this.sessionId)
+      }
+    })
     this.microphone.onError((error) => this.controller.cancelActiveRun(this.sessionId))
     this.transcriber.onError((error) => this.controller.cancelActiveRun(this.sessionId))
     await this.transcriber.open({ language: 'zh-CN', sampleRateHz: 16_000, endpointingMs: 800 })
@@ -25,6 +35,7 @@ export class VoiceSession {
   }
 
   async stop(): Promise<void> {
+    this.#stopping = true
     this.microphone.stop()
     await this.transcriber.finalize()
     await this.transcriber.close()
