@@ -24,7 +24,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       baseUrl: environment.OPENCODE_BASE_URL
         ?? 'https://opencode.ai/inference/go/openai/v1',
       apiKey: environment.OPENCODE_API_KEY,
-      model: environment.OPENCODE_MODEL ?? 'deepseek-4.1-flash',
+      model: environment.OPENCODE_MODEL ?? 'mimo-v2.6-flash',
     },
   }
 }
