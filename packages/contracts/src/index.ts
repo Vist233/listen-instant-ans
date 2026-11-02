@@ -45,6 +45,8 @@ export const agentRunStatusSchema = z.enum([
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>
 
 export const sessionEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('listening.started'), sessionId: z.string(), microphoneDevice: z.string() }),
+  z.object({ type: z.literal('listening.stopped'), sessionId: z.string() }),
   z.object({ type: z.literal('transcript.partial'), sessionId: z.string(), text: z.string() }),
   z.object({ type: z.literal('transcript.final'), sessionId: z.string(), transcript: transcriptFinalSchema }),
   z.object({ type: z.literal('agent.started'), sessionId: z.string(), runId: z.string(), slot: agentSlotSchema }),

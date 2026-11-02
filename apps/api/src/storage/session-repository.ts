@@ -91,6 +91,21 @@ export class SessionRepository {
     }))
   }
 
+  timeline(sessionId: string): object {
+    this.get(sessionId)
+    const transcripts = this.database.prepare(`
+      SELECT sequence, started_at_ms AS startedAtMs, ended_at_ms AS endedAtMs, text, confidence
+      FROM transcripts WHERE session_id = ? ORDER BY sequence ASC
+    `).all(sessionId)
+    const qas = this.database.prepare(`
+      SELECT agent_runs.id AS runId, agent_runs.slot, agent_runs.status, agent_runs.started_at_ms AS startedAtMs,
+        agent_runs.ended_at_ms AS endedAtMs, qas.question, qas.answer, qas.confidence
+      FROM agent_runs LEFT JOIN qas ON qas.run_id = agent_runs.id
+      WHERE agent_runs.session_id = ? ORDER BY agent_runs.started_at_ms ASC
+    `).all(sessionId)
+    return { transcripts, qas }
+  }
+
   markRunStarted(sessionId: string, slot: 'A' | 'B', runId: string, endVersion: number, nowMs: number): SessionState {
     const state = this.get(sessionId)
     this.database.prepare(`

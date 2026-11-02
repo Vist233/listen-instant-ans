@@ -11,6 +11,7 @@ export class VoiceSession {
     private readonly controller: SessionController,
     private readonly microphone: FfmpegMicrophone,
     private readonly transcriber: VoiceProvider,
+    private readonly microphoneDevice: string,
   ) {}
 
   async start(): Promise<void> {
@@ -31,7 +32,7 @@ export class VoiceSession {
     this.microphone.onError((error) => this.controller.cancelActiveRun(this.sessionId))
     this.transcriber.onError((error) => this.controller.cancelActiveRun(this.sessionId))
     await this.transcriber.open({ language: 'zh-CN', sampleRateHz: 16_000, endpointingMs: 800 })
-    this.microphone.start({ device: process.env.LISTEN_INSTANT_ANS_AUDIO_DEVICE ?? '0', sampleRateHz: 16_000 })
+    this.microphone.start({ device: this.microphoneDevice, sampleRateHz: 16_000 })
   }
 
   async stop(): Promise<void> {

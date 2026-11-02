@@ -27,7 +27,13 @@ const transcriber = new AliyunRealtimeTranscriber({
   token: config.aliyun.token,
   endpoint: config.aliyun.endpoint,
 })
-const session = new VoiceSession(sessionId, application.controller, microphone, transcriber)
+const session = new VoiceSession(
+  sessionId,
+  application.controller,
+  microphone,
+  transcriber,
+  process.env.LISTEN_INSTANT_ANS_AUDIO_DEVICE ?? '0',
+)
 await session.start()
 console.log('Listening. Press Enter or Ctrl+C to stop.')
 const readline = createInterface({ input: process.stdin, output: process.stdout })

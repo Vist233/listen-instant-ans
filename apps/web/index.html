@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Listen Instant Ans</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">LIVE CLASSROOM COPILOT</p>
+        <h1>Listen Instant Ans</h1>
+        <p id="status" class="status">Create a session to begin.</p>
+      </header>
+      <section class="controls" aria-label="session controls">
+        <label>Microphone <input id="device" value="1" inputmode="numeric"></label>
+        <button id="create">New session</button>
+        <button id="start" disabled>Start listening</button>
+        <button id="stop" disabled>Stop</button>
+      </section>
+      <section class="grid">
+        <article>
+          <h2>Live transcript</h2>
+          <p id="partial" class="partial">Waiting for speech…</p>
+          <ol id="transcripts" class="timeline"></ol>
+        </article>
+        <article>
+          <h2>Answers</h2>
+          <ol id="qas" class="timeline"></ol>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
