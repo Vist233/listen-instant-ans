@@ -1,16 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { loadConfig } from './config/env.js'
-import { MastraQaRunner } from './agent/mastra-qa-runner.js'
-import { UnconfiguredQaRunner, type QaRunner } from './agent/qa-runner.js'
-import { createOpenCodeQaAgents } from './agent/opencode-mastra-agents.js'
+import { createConfiguredRunner } from './runtime/configured-runner.js'
 import { createApplication } from './runtime/application.js'
 
 const config = loadConfig()
-const runner: QaRunner = config.opencode.apiKey === undefined
-  ? new UnconfiguredQaRunner()
-  : new MastraQaRunner(createOpenCodeQaAgents(config.opencode))
-const application = createApplication(config.databasePath, runner)
+const application = createApplication(config.databasePath, createConfiguredRunner(config))
 const port = Number(process.env.PORT ?? 3100)
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {

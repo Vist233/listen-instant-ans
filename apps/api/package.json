@@ -6,7 +6,8 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
-    "dev": "tsx watch src/server.ts"
+    "dev": "tsx watch src/server.ts",
+    "cli": "tsx src/cli.ts"
   },
   "dependencies": {
     "@listen-instant-ans/contracts": "file:../../packages/contracts",

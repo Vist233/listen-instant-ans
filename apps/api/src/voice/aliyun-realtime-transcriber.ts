@@ -15,6 +15,9 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
   readonly #events = new EventEmitter()
   #socket: WebSocket | null = null
   #config: VoiceSessionConfig | null = null
+  #taskId: string | null = null
+  #resolveStarted: (() => void) | null = null
+  #rejectStarted: ((error: Error) => void) | null = null
 
   constructor(private readonly credentials: AliyunCredentials) {}
 
@@ -23,6 +26,7 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
       throw new Error('Aliyun transcription session is already open')
     }
     this.#config = config
+    this.#taskId = protocolId()
     const url = new URL(this.credentials.endpoint)
     url.searchParams.set('token', this.credentials.token)
     const socket = new WebSocket(url)
@@ -32,11 +36,19 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
       socket.addEventListener('error', () => reject(new Error('Unable to open Aliyun WebSocket')), { once: true })
     })
     socket.addEventListener('message', (event) => this.handleMessage(String(event.data)))
-    socket.addEventListener('error', () => this.#events.emit('error', new Error('Aliyun WebSocket error')))
+    socket.addEventListener('error', () => this.fail(new Error('Aliyun WebSocket error')))
+    const started = new Promise<void>((resolve, reject) => {
+      this.#resolveStarted = resolve
+      this.#rejectStarted = reject
+    })
+    const startTimeout = setTimeout(() => {
+      this.fail(new Error('Timed out waiting for Aliyun TranscriptionStarted'))
+    }, 10_000)
     socket.send(JSON.stringify({
       header: {
         appkey: this.credentials.appKey,
-        message_id: crypto.randomUUID(),
+        message_id: protocolId(),
+        task_id: this.#taskId,
         name: 'StartTranscription',
         namespace: 'SpeechTranscriber',
       },
@@ -45,9 +57,17 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
         sample_rate: config.sampleRateHz,
         enable_intermediate_result: true,
         enable_punctuation_prediction: true,
+        enable_inverse_text_normalization: true,
         max_sentence_silence: config.endpointingMs,
       },
     }))
+    try {
+      await started
+    } finally {
+      clearTimeout(startTimeout)
+      this.#resolveStarted = null
+      this.#rejectStarted = null
+    }
   }
 
   sendAudio(chunk: Uint8Array): void {
@@ -59,7 +79,13 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
 
   async finalize(): Promise<void> {
     this.#socket?.send(JSON.stringify({
-      header: { name: 'StopTranscription', namespace: 'SpeechTranscriber', message_id: crypto.randomUUID() },
+      header: {
+        appkey: this.credentials.appKey,
+        message_id: protocolId(),
+        task_id: this.#taskId,
+        name: 'StopTranscription',
+        namespace: 'SpeechTranscriber',
+      },
     }))
   }
 
@@ -67,6 +93,7 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
     this.#socket?.close()
     this.#socket = null
     this.#config = null
+    this.#taskId = null
   }
 
   onPartial(listener: (text: string) => void): () => void {
@@ -92,6 +119,9 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
       }
       const name = message.header?.name
       const result = message.payload?.result?.trim()
+      if (name === 'TranscriptionStarted') {
+        this.#resolveStarted?.()
+      }
       if (name === 'TranscriptionResultChanged' && result !== undefined && result.length > 0) {
         this.#events.emit('partial', result)
       }
@@ -104,10 +134,19 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
         })
       }
       if (name === 'TaskFailed') {
-        this.#events.emit('error', new Error(message.header?.status_text ?? 'Aliyun transcription failed'))
+        this.fail(new Error(message.header?.status_text ?? 'Aliyun transcription failed'))
       }
     } catch (error) {
       this.#events.emit('error', error instanceof Error ? error : new Error(String(error)))
     }
   }
+
+  private fail(error: Error): void {
+    this.#rejectStarted?.(error)
+    this.#events.emit('error', error)
+  }
+}
+
+function protocolId(): string {
+  return crypto.randomUUID().replaceAll('-', '')
 }

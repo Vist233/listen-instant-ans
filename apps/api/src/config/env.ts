@@ -16,8 +16,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   return {
     databasePath: environment.LISTEN_INSTANT_ANS_DATABASE ?? 'data/listen-instant-ans.sqlite',
     aliyun: {
-      appKey: environment.ALIYUN_NLS_APP_KEY,
-      token: environment.ALIYUN_NLS_TOKEN,
+      appKey: environment.ALIYUN_NLS_APP_KEY ?? environment.ALIYUN_APP_ID,
+      token: environment.ALIYUN_NLS_TOKEN ?? environment.ALIYUN_TMP_TOKEN,
       endpoint: environment.ALIYUN_NLS_ENDPOINT ?? 'wss://nls-gateway.aliyuncs.com/ws/v1',
     },
     opencode: {
