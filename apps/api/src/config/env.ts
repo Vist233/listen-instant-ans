@@ -1,5 +1,6 @@
 export interface AppConfig {
   readonly databasePath: string
+  readonly agentRunTimeoutMs: number
   readonly aliyun: {
     readonly appKey?: string
     readonly token?: string
@@ -14,6 +15,7 @@ export interface AppConfig {
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
+    agentRunTimeoutMs: Number(environment.AGENT_RUN_TIMEOUT_MS ?? 30_000),
     databasePath: environment.LISTEN_INSTANT_ANS_DATABASE ?? 'data/listen-instant-ans.sqlite',
     aliyun: {
       appKey: environment.ALIYUN_NLS_APP_KEY ?? environment.ALIYUN_APP_ID,

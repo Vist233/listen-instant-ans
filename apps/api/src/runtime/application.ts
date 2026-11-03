@@ -12,10 +12,10 @@ export interface Application {
   readonly controller: SessionController
 }
 
-export function createApplication(databasePath: string, runner: QaRunner): Application {
+export function createApplication(databasePath: string, runner: QaRunner, runTimeoutMs?: number): Application {
   const database = openDatabase(databasePath)
   const events = new EventHub()
   const sessions = new SessionRepository(database)
-  const controller = new SessionController(sessions, runner, events)
+  const controller = new SessionController(sessions, runner, events, Date.now, runTimeoutMs)
   return { database, events, sessions, controller }
 }

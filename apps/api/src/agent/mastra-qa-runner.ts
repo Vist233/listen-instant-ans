@@ -1,6 +1,6 @@
 import type { Agent } from '@mastra/core/agent'
 import type { QaResult } from '@listen-instant-ans/contracts'
-import { buildQaPrompt, qaSystemInstructions } from './qa-prompt.js'
+import { buildQaMessages, qaSystemInstructions } from './qa-prompt.js'
 import type { QaRunInput, QaRunner } from './qa-runner.js'
 import type { AppConfig } from '../config/env.js'
 import { createMiMoQaAgents } from './mimo-mastra-agents.js'
@@ -27,8 +27,9 @@ export class MastraQaRunner implements QaRunner {
   }
 
   async *run(input: QaRunInput, signal: AbortSignal): AsyncIterable<Partial<QaResult>> {
+    const startedAt = performance.now()
     const output = await this.agentsFor(input.sessionId)[input.slot].stream(
-      [{ role: 'user', content: buildQaPrompt(input) }],
+      buildQaMessages(input.past, input),
       {
         runId: input.runId,
         abortSignal: signal,
@@ -59,11 +60,15 @@ export class MastraQaRunner implements QaRunner {
         },
       },
     )
+    let firstTokenMs: number | undefined
     for await (const partial of output.objectStream) {
+      firstTokenMs ??= Math.round(performance.now() - startedAt)
       yield partial as Partial<QaResult>
     }
     if (output.error !== undefined) {
       throw output.error
     }
+    const usage = await output.usage
+    input.onUsage?.({ inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, firstTokenMs })
   }
 }

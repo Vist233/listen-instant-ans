@@ -12,7 +12,7 @@ import { FfmpegMicrophone } from './voice/ffmpeg-microphone.js'
 import { WebSessionFacade } from './web/web-session-facade.js'
 
 const config = loadConfig()
-const application = createApplication(config.databasePath, createConfiguredRunner(config))
+const application = createApplication(config.databasePath, createConfiguredRunner(config), config.agentRunTimeoutMs)
 const runtime = new SessionRuntimeManager((sessionId, microphoneDevice) => {
   if (config.aliyun.appKey === undefined || config.aliyun.token === undefined) {
     throw new Error('ALIYUN_APP_ID and ALIYUN_TMP_TOKEN are required before listening can start.')

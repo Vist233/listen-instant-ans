@@ -11,7 +11,7 @@ const config = loadConfig()
 if (config.aliyun.appKey === undefined || config.aliyun.token === undefined) {
   throw new Error('ALIYUN_APP_ID and ALIYUN_TMP_TOKEN are required. Source ~/.zshrc before starting the CLI.')
 }
-const application = createApplication(config.databasePath, createConfiguredRunner(config))
+const application = createApplication(config.databasePath, createConfiguredRunner(config), config.agentRunTimeoutMs)
 const sessionId = randomUUID()
 application.controller.start(sessionId, 'zh-CN')
 application.events.subscribe((event) => {

@@ -13,7 +13,7 @@ interface ActiveRun {
   readonly controller: AbortController
 }
 
-const AGENT_RUN_TIMEOUT_MS = 15_000
+export const DEFAULT_AGENT_RUN_TIMEOUT_MS = 30_000
 
 export class SessionController {
   readonly #activeRuns = new Map<string, ActiveRun>()
@@ -25,6 +25,7 @@ export class SessionController {
     private readonly runner: QaRunner,
     private readonly events: EventHub,
     private readonly now: () => number = Date.now,
+    private readonly runTimeoutMs: number = DEFAULT_AGENT_RUN_TIMEOUT_MS,
   ) {}
 
   start(sessionId: string, language: string): void {
@@ -83,6 +84,8 @@ export class SessionController {
     const snapshotVersion = state.transcriptVersion
     const historyVersion = historyTranscriptVersionFor(state, slot)
     const transcripts = this.sessions.listTranscriptsAfter(sessionId, historyVersion)
+    const past = this.sessions.listSlotTurns(sessionId, slot)
+    const peerQas = this.sessions.listPeerQas(sessionId, slot).slice(past.at(-1)?.peerQaCount ?? 0)
     if (transcripts.length === 0) {
       return
     }
@@ -99,9 +102,10 @@ export class SessionController {
         sessionId,
         slot,
         runId,
+        past,
         transcripts,
-        historyTranscripts: this.sessions.listTranscriptsUntil(sessionId, historyVersion),
-        peerQas: this.sessions.listPeerQas(sessionId, slot),
+        peerQas,
+        onUsage: (usage) => this.sessions.recordUsage(runId, usage),
       }, controller.signal)) {
         merged = { ...merged, ...partial }
         if (!timedOut) this.events.publish({ type: 'qa.partial', sessionId, runId, slot, partial })
@@ -115,7 +119,7 @@ export class SessionController {
     })()
     let timeoutHandle: NodeJS.Timeout | undefined
     const timeout = new Promise<'timeout'>((resolve) => {
-      timeoutHandle = setTimeout(() => resolve('timeout'), AGENT_RUN_TIMEOUT_MS)
+      timeoutHandle = setTimeout(() => resolve('timeout'), this.runTimeoutMs)
     })
     try {
       const outcome = await Promise.race([run, timeout])
@@ -125,7 +129,7 @@ export class SessionController {
         void run.catch(() => undefined)
         this.sessions.skipRun(sessionId, slot, runId, this.now())
         this.#lastSlot.set(sessionId, slot)
-        this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: 'Agent timed out after 15 seconds and was skipped.' })
+        this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: `Agent timed out after ${Math.round(this.runTimeoutMs / 1000)} seconds and was skipped.` })
         return
       }
       const result = outcome

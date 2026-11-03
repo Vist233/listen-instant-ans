@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { QaResult, TranscriptFinal } from '@listen-instant-ans/contracts'
-import type { PreparedQa, SessionState } from '../session/session-state.js'
+import { historyTranscriptVersionFor, type PreparedQa, type SessionState } from '../session/session-state.js'
 
 interface SessionRow {
   id: string
@@ -14,7 +14,21 @@ interface SessionRow {
   prepared_qa_for_b: string | null
   last_agent_request_at_ms: number
   consecutive_empty_qa: number
+  consecutive_failures: number
   last_completed_slot: 'A' | 'B' | null
+}
+
+export interface SlotTurn {
+  readonly transcripts: TranscriptFinal[]
+  readonly peerQas: QaResult[]
+  readonly result: QaResult
+  readonly peerQaCount: number
+}
+
+export interface RunUsage {
+  readonly inputTokens?: number
+  readonly cachedInputTokens?: number
+  readonly firstTokenMs?: number
 }
 
 function parsePreparedQa(value: string | null): PreparedQa | null {
@@ -34,6 +48,7 @@ function toState(row: SessionRow): SessionState {
     preparedQaForB: parsePreparedQa(row.prepared_qa_for_b),
     lastAgentRequestAtMs: row.last_agent_request_at_ms,
     consecutiveEmptyQa: row.consecutive_empty_qa,
+    consecutiveFailures: row.consecutive_failures,
     lastCompletedSlot: row.last_completed_slot,
   }
 }
@@ -103,17 +118,13 @@ export class SessionRepository {
     }))
   }
 
-  listTranscriptsUntil(sessionId: string, version: number): TranscriptFinal[] {
-    return this.listTranscriptsAfter(sessionId, 0).filter((item) => item.sequence <= version)
-  }
-
   listPeerQas(sessionId: string, slot: 'A' | 'B'): QaResult[] {
     const peer = slot === 'A' ? 'B' : 'A'
     const rows = this.database.prepare(`
       SELECT qas.status, qas.question, qas.answer, qas.sources_json AS sourcesJson, qas.confidence
       FROM qas JOIN agent_runs ON agent_runs.id = qas.run_id
       WHERE agent_runs.session_id = ? AND agent_runs.slot = ? AND qas.status != 'ignore'
-      ORDER BY agent_runs.ended_at_ms ASC, agent_runs.id ASC
+      ORDER BY qas.rowid ASC
     `).all(sessionId, peer) as Array<{ status: QaResult['status']; question: string | null; answer: string | null; sourcesJson: string; confidence: number }>
     return rows.map((row) => ({ ...row, sources: JSON.parse(row.sourcesJson) } as QaResult))
   }
@@ -123,6 +134,40 @@ export class SessionRepository {
     this.database.prepare(`UPDATE sessions SET ${column} = MAX(${column}, ?), updated_at_ms = ? WHERE id = ?`)
       .run(version, nowMs, sessionId)
     return this.get(sessionId)
+  }
+
+  /** Completed turns of one slot, in order, each with the exact input it was given. */
+  listSlotTurns(sessionId: string, slot: 'A' | 'B'): SlotTurn[] {
+    const runs = this.database.prepare(`
+      SELECT agent_runs.start_version AS startVersion, agent_runs.end_version AS endVersion,
+        agent_runs.peer_qa_count AS peerQaCount, qas.status, qas.question, qas.answer,
+        qas.sources_json AS sourcesJson, qas.confidence
+      FROM agent_runs JOIN qas ON qas.run_id = agent_runs.id
+      WHERE agent_runs.session_id = ? AND agent_runs.slot = ? AND agent_runs.status = 'completed'
+      ORDER BY agent_runs.started_at_ms ASC, agent_runs.rowid ASC
+    `).all(sessionId, slot) as Array<{
+      startVersion: number; endVersion: number; peerQaCount: number
+      status: QaResult['status']; question: string | null; answer: string | null; sourcesJson: string; confidence: number
+    }>
+    const transcripts = this.listTranscriptsAfter(sessionId, 0)
+    const peerQas = this.listPeerQas(sessionId, slot)
+    let deliveredPeerQas = 0
+    return runs.map((run) => {
+      const turn: SlotTurn = {
+        transcripts: transcripts.filter((item) => item.sequence > run.startVersion && item.sequence <= run.endVersion),
+        peerQas: peerQas.slice(deliveredPeerQas, run.peerQaCount),
+        result: { status: run.status, question: run.question, answer: run.answer, sources: JSON.parse(run.sourcesJson), confidence: run.confidence } as QaResult,
+        peerQaCount: run.peerQaCount,
+      }
+      deliveredPeerQas = run.peerQaCount
+      return turn
+    })
+  }
+
+  recordUsage(runId: string, usage: RunUsage): void {
+    this.database.prepare(`
+      UPDATE agent_runs SET input_tokens = ?, cached_input_tokens = ?, first_token_ms = ? WHERE id = ?
+    `).run(usage.inputTokens ?? null, usage.cachedInputTokens ?? null, usage.firstTokenMs ?? null, runId)
   }
 
   timeline(sessionId: string): object {
@@ -143,9 +188,9 @@ export class SessionRepository {
   markRunStarted(sessionId: string, slot: 'A' | 'B', runId: string, endVersion: number, nowMs: number): SessionState {
     const state = this.get(sessionId)
     this.database.prepare(`
-      INSERT INTO agent_runs (id, session_id, slot, start_version, end_version, status, started_at_ms)
-      VALUES (?, ?, ?, ?, ?, 'running', ?)
-    `).run(runId, sessionId, slot, state.handoffVersion, endVersion, nowMs)
+      INSERT INTO agent_runs (id, session_id, slot, start_version, end_version, peer_qa_count, status, started_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+    `).run(runId, sessionId, slot, historyTranscriptVersionFor(state, slot), endVersion, this.listPeerQas(sessionId, slot).length, nowMs)
     this.database.prepare(`
       UPDATE sessions SET active_agent = ?, last_agent_request_at_ms = ?, updated_at_ms = ? WHERE id = ?
     `).run(slot, nowMs, nowMs, sessionId)
@@ -175,7 +220,7 @@ export class SessionRepository {
         const targetColumn = nextSlot === 'A' ? 'prepared_qa_for_a' : 'prepared_qa_for_b'
         this.database.prepare(`
         UPDATE sessions SET handoff_version = ?, ${targetColumn} = ?,
-          active_agent = NULL, consecutive_empty_qa = 0, last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
+          active_agent = NULL, consecutive_empty_qa = 0, consecutive_failures = 0, last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
         `).run(snapshotVersion, prepared, slot, nowMs, sessionId)
         this.database.prepare(`
           INSERT INTO handoffs (session_id, from_slot, to_slot, run_id, raw_qa_json, handoff_version, created_at_ms)
@@ -183,7 +228,7 @@ export class SessionRepository {
         `).run(sessionId, slot, nextSlot, runId, JSON.stringify(result), snapshotVersion, nowMs)
       } else {
         this.database.prepare(`
-          UPDATE sessions SET active_agent = NULL, consecutive_empty_qa = consecutive_empty_qa + 1,
+          UPDATE sessions SET active_agent = NULL, consecutive_empty_qa = consecutive_empty_qa + 1, consecutive_failures = 0,
           last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
         `).run(slot, nowMs, sessionId)
       }
@@ -211,14 +256,14 @@ export class SessionRepository {
     slot: 'A' | 'B',
     runId: string,
     nowMs: number,
-    message = 'Timed out after 15 seconds; skipped.',
+    message = 'Timed out; skipped.',
   ): SessionState {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.database.prepare(`UPDATE agent_runs SET status = 'cancelled', ended_at_ms = ?, error_message = ? WHERE id = ?`)
         .run(nowMs, message, runId)
       this.database.prepare(`
-        UPDATE sessions SET active_agent = NULL, consecutive_empty_qa = consecutive_empty_qa + 1,
+        UPDATE sessions SET active_agent = NULL, consecutive_failures = consecutive_failures + 1,
           last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
       `).run(slot, nowMs, sessionId)
       const state = this.get(sessionId)

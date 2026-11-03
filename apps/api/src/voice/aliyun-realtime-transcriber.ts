@@ -1,6 +1,10 @@
 import { EventEmitter } from 'node:events'
 import type { VoiceProvider, VoiceSessionConfig } from './voice-provider.js'
 
+const RECONNECT_ATTEMPTS = 3
+const RECONNECT_BASE_DELAY_MS = 500
+const FINALIZE_WAIT_MS = 3_000
+
 export interface AliyunCredentials {
   readonly appKey: string
   readonly token: string
@@ -18,6 +22,9 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
   #taskId: string | null = null
   #resolveStarted: (() => void) | null = null
   #rejectStarted: ((error: Error) => void) | null = null
+  #resolveCompleted: (() => void) | null = null
+  #closing = false
+  #droppedAudioChunks = 0
 
   constructor(private readonly credentials: AliyunCredentials) {}
 
@@ -26,59 +33,32 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
       throw new Error('Aliyun transcription session is already open')
     }
     this.#config = config
-    this.#taskId = protocolId()
-    const url = new URL(this.credentials.endpoint)
-    url.searchParams.set('token', this.credentials.token)
-    const socket = new WebSocket(url)
-    this.#socket = socket
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener('open', () => resolve(), { once: true })
-      socket.addEventListener('error', () => reject(new Error('Unable to open Aliyun WebSocket')), { once: true })
-    })
-    socket.addEventListener('message', (event) => this.handleMessage(String(event.data)))
-    socket.addEventListener('error', () => this.fail(new Error('Aliyun WebSocket error')))
-    const started = new Promise<void>((resolve, reject) => {
-      this.#resolveStarted = resolve
-      this.#rejectStarted = reject
-    })
-    const startTimeout = setTimeout(() => {
-      this.fail(new Error('Timed out waiting for Aliyun TranscriptionStarted'))
-    }, 10_000)
-    socket.send(JSON.stringify({
-      header: {
-        appkey: this.credentials.appKey,
-        message_id: protocolId(),
-        task_id: this.#taskId,
-        name: 'StartTranscription',
-        namespace: 'SpeechTranscriber',
-      },
-      payload: {
-        format: 'pcm',
-        sample_rate: config.sampleRateHz,
-        enable_intermediate_result: true,
-        enable_punctuation_prediction: true,
-        enable_inverse_text_normalization: true,
-        max_sentence_silence: config.endpointingMs,
-      },
-    }))
-    try {
-      await started
-    } finally {
-      clearTimeout(startTimeout)
-      this.#resolveStarted = null
-      this.#rejectStarted = null
-    }
+    this.#closing = false
+    await this.connect()
   }
 
+  /** Audio is dropped, never thrown, while the socket is down or reconnecting. */
   sendAudio(chunk: Uint8Array): void {
     if (this.#socket?.readyState !== WebSocket.OPEN) {
-      throw new Error('Aliyun transcription session is not open')
+      this.#droppedAudioChunks++
+      return
     }
     this.#socket.send(chunk)
   }
 
+  get droppedAudioChunks(): number {
+    return this.#droppedAudioChunks
+  }
+
+  /** Sends StopTranscription and waits briefly for the last sentence before the caller closes. */
   async finalize(): Promise<void> {
-    this.#socket?.send(JSON.stringify({
+    this.#closing = true
+    if (this.#socket?.readyState !== WebSocket.OPEN) return
+    const completed = new Promise<void>((resolve) => {
+      this.#resolveCompleted = resolve
+      setTimeout(resolve, FINALIZE_WAIT_MS)
+    })
+    this.#socket.send(JSON.stringify({
       header: {
         appkey: this.credentials.appKey,
         message_id: protocolId(),
@@ -87,13 +67,91 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
         namespace: 'SpeechTranscriber',
       },
     }))
+    await completed
+    this.#resolveCompleted = null
   }
 
   async close(): Promise<void> {
+    this.#closing = true
     this.#socket?.close()
     this.#socket = null
     this.#config = null
     this.#taskId = null
+  }
+
+  private async connect(): Promise<void> {
+    const config = this.#config
+    if (config === null) throw new Error('Aliyun transcription session is not configured')
+    this.#taskId = protocolId()
+    const url = new URL(this.credentials.endpoint)
+    url.searchParams.set('token', this.credentials.token)
+    const socket = new WebSocket(url)
+    this.#socket = socket
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener('open', () => resolve(), { once: true })
+        socket.addEventListener('error', () => reject(new Error('Unable to open Aliyun WebSocket')), { once: true })
+      })
+      socket.addEventListener('message', (event) => this.handleMessage(String(event.data)))
+      socket.addEventListener('error', () => this.#rejectStarted?.(new Error('Aliyun WebSocket error')))
+      socket.addEventListener('close', () => this.handleClose(socket), { once: true })
+      const started = new Promise<void>((resolve, reject) => {
+        this.#resolveStarted = resolve
+        this.#rejectStarted = reject
+      })
+      const startTimeout = setTimeout(() => {
+        this.#rejectStarted?.(new Error('Timed out waiting for Aliyun TranscriptionStarted'))
+      }, 10_000)
+      socket.send(JSON.stringify({
+        header: {
+          appkey: this.credentials.appKey,
+          message_id: protocolId(),
+          task_id: this.#taskId,
+          name: 'StartTranscription',
+          namespace: 'SpeechTranscriber',
+        },
+        payload: {
+          format: 'pcm',
+          sample_rate: config.sampleRateHz,
+          enable_intermediate_result: true,
+          enable_punctuation_prediction: true,
+          enable_inverse_text_normalization: true,
+          max_sentence_silence: config.endpointingMs,
+        },
+      }))
+      try {
+        await started
+      } finally {
+        clearTimeout(startTimeout)
+        this.#resolveStarted = null
+        this.#rejectStarted = null
+      }
+    } catch (error) {
+      socket.close()
+      if (this.#socket === socket) this.#socket = null
+      throw error
+    }
+  }
+
+  private handleClose(socket: WebSocket): void {
+    if (this.#closing || this.#socket !== socket) return
+    this.#socket = null
+    void this.reconnect()
+  }
+
+  /** Transient drops are retried silently; only a final failure is reported. */
+  private async reconnect(): Promise<void> {
+    for (let attempt = 1; attempt <= RECONNECT_ATTEMPTS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1)))
+      if (this.#closing) return
+      try {
+        await this.connect()
+        return
+      } catch {
+        // try again
+      }
+    }
+    this.#events.emit('error', new Error('Aliyun connection lost and could not be restored (the token may have expired).'))
   }
 
   onPartial(listener: (text: string) => void): () => void {
@@ -132,6 +190,9 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
           text: result,
           confidence: message.payload?.confidence ?? null,
         })
+      }
+      if (name === 'TranscriptionCompleted') {
+        this.#resolveCompleted?.()
       }
       if (name === 'TaskFailed') {
         this.fail(new Error(message.header?.status_text ?? 'Aliyun transcription failed'))

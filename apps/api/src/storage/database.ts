@@ -76,9 +76,23 @@ export function openDatabase(path: string): DatabaseSync {
       FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
   `)
-  const columns = database.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
-  const names = new Set(columns.map((column) => column.name))
-  if (!names.has('history_transcript_version_a')) database.exec('ALTER TABLE sessions ADD COLUMN history_transcript_version_a INTEGER NOT NULL DEFAULT 0')
-  if (!names.has('history_transcript_version_b')) database.exec('ALTER TABLE sessions ADD COLUMN history_transcript_version_b INTEGER NOT NULL DEFAULT 0')
+  addColumns(database, 'sessions', {
+    history_transcript_version_a: 'INTEGER NOT NULL DEFAULT 0',
+    history_transcript_version_b: 'INTEGER NOT NULL DEFAULT 0',
+    consecutive_failures: 'INTEGER NOT NULL DEFAULT 0',
+  })
+  addColumns(database, 'agent_runs', {
+    peer_qa_count: 'INTEGER NOT NULL DEFAULT 0',
+    input_tokens: 'INTEGER',
+    cached_input_tokens: 'INTEGER',
+    first_token_ms: 'INTEGER',
+  })
   return database
+}
+
+function addColumns(database: DatabaseSync, table: string, columns: Record<string, string>): void {
+  const existing = new Set((database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name))
+  for (const [name, definition] of Object.entries(columns)) {
+    if (!existing.has(name)) database.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`)
+  }
 }

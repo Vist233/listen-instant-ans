@@ -17,6 +17,7 @@ export interface SessionState {
   readonly preparedQaForB: PreparedQa | null
   readonly lastAgentRequestAtMs: number
   readonly consecutiveEmptyQa: number
+  readonly consecutiveFailures: number
   readonly lastCompletedSlot: AgentSlot | null
 }
 
