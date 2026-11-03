@@ -1,10 +1,10 @@
 import type { SessionEvent } from '@listen-instant-ans/contracts'
 import type { QaRunInput, QaRunner } from '../src/agent/qa-runner.js'
 import { createApplication, type Application } from '../src/bootstrap.js'
-import { loadConfig } from '../src/config/env.js'
 import type { Tuning } from '../src/config/tuning.js'
 import type { EventHub } from '../src/events/event-hub.js'
 import type { VoiceSessionFactory } from '../src/runtime/session-runtime-manager.js'
+import type { MicrophoneList } from '../src/voice/ffmpeg-microphone.js'
 
 export type Script = (input: QaRunInput, call: number, signal: AbortSignal) => AsyncIterable<string>
 
@@ -55,13 +55,18 @@ export interface TestAppOptions {
   readonly now?: () => number
   readonly autoStartLanes?: boolean
   readonly voiceSessionFactory?: VoiceSessionFactory
+  readonly microphones?: () => Promise<MicrophoneList>
+  readonly env?: NodeJS.ProcessEnv
 }
 
 export function createTestApp(runner: QaRunner, options: TestAppOptions = {}): Application {
-  return createApplication(loadConfig({}), {
+  return createApplication({
+    env: options.env ?? {},
+    settingsPath: null,
     runner,
     databasePath: ':memory:',
     voiceSessionFactory: options.voiceSessionFactory,
+    microphones: options.microphones,
     controller: { autoStartLanes: options.autoStartLanes ?? false, now: options.now, tuning: options.tuning },
   })
 }

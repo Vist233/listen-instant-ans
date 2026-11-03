@@ -9,30 +9,58 @@
   <body>
     <main class="workspace">
       <aside class="sidebar">
-        <div class="sidebar-title"><h1>Listen Instant Ans</h1><button id="create">新建会话</button></div>
+        <div class="sidebar-head">
+          <h1>Listen Instant Ans</h1>
+          <button id="new-session" class="secondary">新建会话</button>
+        </div>
         <nav id="sessions" aria-label="会话列表"></nav>
+        <button id="open-settings" class="link">设置</button>
       </aside>
-      <section class="content">
-        <header><h2 id="session-title">选择或新建会话</h2><p id="status" class="status">尚未选择会话。</p></header>
-        <section class="controls" aria-label="录音控制">
-          <label>麦克风 <input id="device" value="0" inputmode="numeric"></label>
-          <button id="start" disabled>开始录音</button>
-          <button id="stop" disabled>停止录音</button>
-        </section>
-        <section class="grid">
-        <article>
-          <h2>转写记录</h2>
-          <p id="partial" class="partial">等待语音…</p>
-          <ol id="transcripts" class="timeline"></ol>
-        </article>
-        <article>
-          <h2>问答</h2>
-          <p id="qa-partial" class="partial" aria-live="polite"></p>
-          <ol id="qas" class="timeline"></ol>
-        </article>
-        </section>
+      <section class="main">
+        <h2 id="session-title" class="session-title">还没有会话</h2>
+        <div class="board">
+          <div class="controls" aria-label="录音控制">
+            <label>麦克风
+              <select id="device" aria-label="麦克风"><option>正在查找麦克风…</option></select>
+            </label>
+            <button id="start" class="primary">开始录音</button>
+            <button id="stop" class="primary" disabled>停止录音</button>
+          </div>
+          <p id="status" class="status" role="status">点“开始录音”就会新建一个会话。</p>
+          <section class="column" aria-labelledby="transcript-heading">
+            <h2 id="transcript-heading">语音转录</h2>
+            <p id="partial" class="partial">等待语音…</p>
+            <ol id="transcripts" class="timeline"></ol>
+          </section>
+          <section class="column" aria-labelledby="qa-heading">
+            <h2 id="qa-heading">问答</h2>
+            <p id="qa-partial" class="partial" aria-live="polite"></p>
+            <ol id="qas" class="timeline"></ol>
+          </section>
+        </div>
       </section>
     </main>
+    <dialog id="settings" aria-labelledby="settings-title">
+      <form id="settings-form" method="dialog">
+        <h2 id="settings-title">设置</h2>
+        <p class="note">密钥只保存在这台电脑上（<span id="settings-path"></span>），不会发到别处。输入框留空表示保持不变。</p>
+        <fieldset>
+          <legend>回答（MiMo）</legend>
+          <label>API Key <input id="mimo-key" type="password" autocomplete="off" spellcheck="false"></label>
+          <label>模型 <input id="mimo-model" type="text" autocomplete="off" spellcheck="false"></label>
+        </fieldset>
+        <fieldset>
+          <legend>语音识别（阿里云）</legend>
+          <label>AppKey <input id="aliyun-appkey" type="password" autocomplete="off" spellcheck="false"></label>
+          <label>Token <input id="aliyun-token" type="password" autocomplete="off" spellcheck="false"></label>
+        </fieldset>
+        <p id="settings-error" class="error" role="alert"></p>
+        <div class="actions">
+          <button type="button" id="settings-cancel" class="secondary">取消</button>
+          <button type="submit" id="settings-save" class="primary">保存</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

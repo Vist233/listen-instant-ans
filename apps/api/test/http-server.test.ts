@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { Server } from 'node:http'
+import { request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -113,7 +113,8 @@ test('starting to listen without Aliyun credentials explains what is missing', a
     const { body: session } = await call(base, '/sessions', 'POST', {})
     const started = await call(base, `/sessions/${session.id}/listening/start`, 'POST', {})
     assert.equal(started.status, 400)
-    assert.match(started.body.error, /ALIYUN_APP_ID/)
+    assert.match(started.body.error, /阿里云/)
+    assert.equal(started.body.code, 'settings')
     assert.equal((await call(base, '/sessions/nope/listening/start', 'POST', {})).status, 404)
   })
 })
@@ -148,5 +149,118 @@ test('the web page and its assets are served', async () => {
       assert.match(response.headers.get('content-type') ?? '', new RegExp(type))
       assert.match(await response.text(), new RegExp(marker.replace('.', '\\.')))
     }
+  })
+})
+
+test('settings: the page can read what is set and change it, and secrets are never sent back', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')))
+  await withServer(app, async (base) => {
+    const before = await call(base, '/settings')
+    assert.deepEqual(before.body.ready, { answering: false, transcription: false })
+    const saved = await call(base, '/settings', 'PUT', { mimo: { apiKey: 'sk-secret-from-the-panel' }, aliyun: { appKey: 'app-key-1', token: 'token-secret-5678' } })
+    assert.equal(saved.status, 200)
+    assert.deepEqual(saved.body.ready, { answering: true, transcription: true })
+    assert.equal(saved.body.aliyun.token.hint, '····5678')
+    const again = JSON.stringify((await call(base, '/settings')).body)
+    assert.equal(again.includes('sk-secret-from-the-panel'), false)
+    assert.equal(again.includes('token-secret-5678'), false)
+    assert.equal(app.settings.current().mimo.apiKey, 'sk-secret-from-the-panel')
+  })
+})
+
+test('settings: invalid values are rejected with a settings error', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')))
+  await withServer(app, async (base) => {
+    const bad = await call(base, '/settings', 'PUT', { mimo: { baseUrl: 'not a url' } })
+    assert.equal(bad.status, 400)
+    assert.equal(bad.body.code, 'settings')
+    assert.equal((await call(base, '/settings', 'PUT', { mimo: { apiKey: 'has space' } })).status, 400)
+    assert.equal(app.settings.status().mimo.apiKey.set, false)
+  })
+})
+
+test('saving the Aliyun settings is enough for listening to try to start, with no restart', async () => {
+  // A WebSocket that always fails to connect: no network, and the microphone is never started.
+  class RefusedSocket extends EventTarget {
+    static OPEN = 1
+    readyState = 0
+    constructor() {
+      super()
+      setTimeout(() => { this.dispatchEvent(new Event('error')); this.dispatchEvent(new Event('close')) }, 0)
+    }
+    send(): void {}
+    close(): void {}
+  }
+  const original = globalThis.WebSocket
+  globalThis.WebSocket = RefusedSocket as unknown as typeof WebSocket
+  try {
+    const app = createTestApp(new ScriptedRunner(() => say('-')))
+    await withServer(app, async (base) => {
+      const { body: session } = await call(base, '/sessions', 'POST', {})
+      const before = await call(base, `/sessions/${session.id}/listening/start`, 'POST', {})
+      assert.equal(before.body.code, 'settings')
+      await call(base, '/settings', 'PUT', { aliyun: { appKey: 'a', token: 'token-1234567' } })
+      const after = await call(base, `/sessions/${session.id}/listening/start`, 'POST', {})
+      assert.equal(after.status, 400)
+      assert.equal(after.body.code, undefined)
+      assert.match(after.body.error, /Unable to open Aliyun WebSocket/)
+      assert.equal(app.runtime.isListening(session.id), false)
+    })
+  } finally {
+    globalThis.WebSocket = original
+  }
+})
+
+test('devices: the list from the microphone lookup is returned with its error', async () => {
+  const devices = [{ id: '0', name: 'MacBook Air Microphone' }]
+  const app = createTestApp(new ScriptedRunner(() => say('-')), { microphones: async () => ({ devices }) })
+  await withServer(app, async (base) => {
+    assert.deepEqual((await call(base, '/devices')).body, { devices })
+  })
+  const broken = createTestApp(new ScriptedRunner(() => say('-')), { microphones: async () => ({ devices: [], error: '没有找到 ffmpeg' }) })
+  await withServer(broken, async (base) => {
+    assert.deepEqual((await call(base, '/devices')).body, { devices: [], error: '没有找到 ffmpeg' })
+  })
+})
+
+function rawRequest(base: string, path: string, method: string, headers: Record<string, string>, body?: string): Promise<number> {
+  const url = new URL(base)
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ host: url.hostname, port: url.port, path, method, headers }, (response) => {
+      response.resume()
+      resolve(response.statusCode ?? 0)
+    })
+    request.on('error', reject)
+    request.end(body)
+  })
+}
+
+test('security: requests for another host name are refused (DNS rebinding)', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')))
+  await withServer(app, async (base) => {
+    assert.equal(await rawRequest(base, '/settings', 'GET', { host: 'evil.example.com' }), 403)
+    assert.equal(await rawRequest(base, '/sessions', 'GET', { host: 'evil.example.com:3100' }), 403)
+    assert.equal(await rawRequest(base, '/health', 'GET', { host: 'localhost:3100' }), 200)
+    assert.equal(await rawRequest(base, '/health', 'GET', { host: '[::1]:3100' }), 200)
+  })
+})
+
+test('security: a web page on another site cannot change settings or start sessions', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')))
+  await withServer(app, async (base) => {
+    const headers = { 'content-type': 'application/json', origin: 'https://evil.example.com' }
+    assert.equal(await rawRequest(base, '/settings', 'PUT', headers, JSON.stringify({ mimo: { apiKey: 'sk-stolen-key' } })), 403)
+    assert.equal(await rawRequest(base, '/sessions', 'POST', headers, '{}'), 403)
+    assert.equal(app.settings.status().mimo.apiKey.set, false)
+    const host = new URL(base).host
+    assert.equal(await rawRequest(base, '/sessions', 'POST', { ...headers, origin: `http://${host}` }, '{}'), 201)
+  })
+})
+
+test('security: an oversized body is rejected', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')))
+  await withServer(app, async (base) => {
+    const huge = JSON.stringify({ mimo: { apiKey: 'x'.repeat(100_000) } })
+    assert.equal((await call(base, '/settings', 'PUT', JSON.parse(huge))).status, 400)
   })
 })

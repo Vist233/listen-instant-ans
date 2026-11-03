@@ -19,9 +19,3 @@ export interface QaRunInput {
 export interface QaRunner {
   run(input: QaRunInput, signal: AbortSignal): AsyncIterable<string>
 }
-
-export class UnconfiguredQaRunner implements QaRunner {
-  async *run(): AsyncIterable<string> {
-    throw new Error('MIMO_API_KEY is not configured, so the QA agents cannot run.')
-  }
-}

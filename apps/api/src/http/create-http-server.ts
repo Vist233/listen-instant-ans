@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { Application } from '../bootstrap.js'
+import { SettingsError } from '../config/settings-store.js'
 
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -20,10 +21,32 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   response.end(JSON.stringify(value))
 }
 
+const MAX_BODY_BYTES = 64 * 1024
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
 async function readJson(request: IncomingMessage): Promise<unknown> {
   let body = ''
-  for await (const chunk of request) body += String(chunk)
+  for await (const chunk of request) {
+    body += String(chunk)
+    if (body.length > MAX_BODY_BYTES) throw new Error('Request body is too large.')
+  }
   return body === '' ? {} : JSON.parse(body)
+}
+
+/** Only this machine may talk to the server: blocks DNS-rebinding and cross-site requests. */
+function forbiddenReason(request: IncomingMessage): string | null {
+  const host = request.headers.host ?? ''
+  const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]
+  if (!LOCAL_HOSTS.has(name)) return 'Forbidden host.'
+  const origin = request.headers.origin
+  if (request.method !== 'GET' && origin !== undefined) {
+    try {
+      if (new URL(origin).host !== host) return 'Forbidden origin.'
+    } catch {
+      return 'Forbidden origin.'
+    }
+  }
+  return null
 }
 
 export function createHttpServer(app: Application, webRoot: string): Server {
@@ -41,8 +64,26 @@ export function createHttpServer(app: Application, webRoot: string): Server {
       const path = url.pathname
       const method = request.method
 
+      const forbidden = forbiddenReason(request)
+      if (forbidden !== null) {
+        sendJson(response, 403, { error: forbidden })
+        return
+      }
+
       if (method === 'GET' && path === '/health') {
         sendJson(response, 200, { ok: true })
+        return
+      }
+      if (method === 'GET' && path === '/devices') {
+        sendJson(response, 200, await app.microphones())
+        return
+      }
+      if (method === 'GET' && path === '/settings') {
+        sendJson(response, 200, app.settings.status())
+        return
+      }
+      if (method === 'PUT' && path === '/settings') {
+        sendJson(response, 200, app.settings.update(await readJson(request)))
         return
       }
       if (method === 'POST' && path === '/sessions') {
@@ -129,6 +170,10 @@ export function createHttpServer(app: Application, webRoot: string): Server {
       sendJson(response, 404, { error: 'Not found.' })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unexpected error.'
+      if (error instanceof SettingsError) {
+        sendJson(response, 400, { error: message, code: 'settings' })
+        return
+      }
       sendJson(response, message.startsWith('Session not found:') ? 404 : 400, { error: message })
     }
   })

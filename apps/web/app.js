@@ -1,159 +1,318 @@
-const status = document.querySelector('#status')
-const partial = document.querySelector('#partial')
-const qaPartial = document.querySelector('#qa-partial')
-const transcripts = document.querySelector('#transcripts')
-const qas = document.querySelector('#qas')
-const sessionList = document.querySelector('#sessions')
-const sessionTitle = document.querySelector('#session-title')
-const createButton = document.querySelector('#create')
-const startButton = document.querySelector('#start')
-const stopButton = document.querySelector('#stop')
-const device = document.querySelector('#device')
+const $ = (selector) => document.querySelector(selector)
+const els = {
+  status: $('#status'), partial: $('#partial'), qaPartial: $('#qa-partial'),
+  transcripts: $('#transcripts'), qas: $('#qas'), sessions: $('#sessions'), title: $('#session-title'),
+  newSession: $('#new-session'), start: $('#start'), stop: $('#stop'), device: $('#device'),
+  openSettings: $('#open-settings'), dialog: $('#settings'), form: $('#settings-form'),
+  mimoKey: $('#mimo-key'), mimoModel: $('#mimo-model'), aliyunAppKey: $('#aliyun-appkey'), aliyunToken: $('#aliyun-token'),
+  settingsPath: $('#settings-path'), settingsError: $('#settings-error'), cancel: $('#settings-cancel'),
+}
+const ANSWER_MAX_LENGTH = 200
+const SESSION_KEY = 'listenInstantAns.sessionId'
+const DEVICE_KEY = 'listenInstantAns.microphone'
+
 let sessionId = null
+let current = null // the session shown on the right
+let liveId = null // the session that is recording right now, if any
 let events = null
+let devices = []
 const transcriptSequences = new Set()
 const qaIds = new Set()
 const drafts = new Map()
-const sessionStorageKey = 'listenInstantAns.sessionId'
-const ANSWER_MAX_LENGTH = 200
+const activeRuns = new Map() // runId -> slot
+let refreshTimer = null
 
-function setStatus(message) { status.textContent = message }
-function sessionLabel(session) { return new Date(session.createdAtMs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
-function hasQuestion(item) { return typeof item.question === 'string' && item.question.trim() !== '' }
+const remember = {
+  get(key, from = localStorage) { try { return from.getItem(key) } catch { return null } },
+  set(key, value, to = localStorage) { try { to.setItem(key, value) } catch { /* private mode */ } },
+}
+
+function setStatus(message) { els.status.textContent = message }
+function timeLabel(ms) { return new Date(ms).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
+function deviceName(id) { return devices.find((device) => device.id === id)?.name ?? `设备 ${id}` }
 function conciseAnswer(answer) {
-  if (typeof answer !== 'string') return '（未生成答案）'
-  const text = answer.trim()
+  const text = String(answer ?? '').trim()
   return text.length <= ANSWER_MAX_LENGTH ? text : `${text.slice(0, ANSWER_MAX_LENGTH)}…`
 }
-async function loadSessions() {
-  const items = await request('/sessions')
-  sessionList.replaceChildren()
-  for (const item of items) {
-    const button = document.createElement('button')
-    button.className = `session${item.id === sessionId ? ' active' : ''}`
-    button.textContent = sessionLabel(item)
-    const detail = document.createElement('small')
-    detail.textContent = item.listening ? '正在录音' : item.activeAgent ? `Agent ${item.activeAgent} 回答中` : '已结束'
-    button.append(detail)
-    button.onclick = () => {
-      void activateSession(item.id).catch((error) => setStatus(error.message))
-    }
-    sessionList.append(button)
+
+async function request(path, method = 'GET', body) {
+  const response = await fetch(path, {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const data = await response.json()
+  if (!response.ok) {
+    const error = new Error(data.error ?? '请求失败')
+    error.code = data.code
+    throw error
   }
+  return data
 }
+
+/* ---------- lists: newest first ---------- */
+
 function appendTranscript(item) {
   if (transcriptSequences.has(item.sequence)) return
   transcriptSequences.add(item.sequence)
   const row = document.createElement('li')
   row.textContent = item.text
-  transcripts.append(row)
+  els.transcripts.prepend(row)
 }
-function appendQa(result) {
-  const id = result.qaId ?? result.id
+
+function appendQa(item) {
+  const id = item.qaId ?? item.id
   if (qaIds.has(id)) return
   qaIds.add(id)
   const row = document.createElement('li')
   const question = document.createElement('p')
   question.className = 'qa-question'
-  question.textContent = `问题：${result.question}`
+  question.textContent = `问题：${item.question}`
   const answer = document.createElement('p')
   answer.className = 'qa-answer'
-  answer.textContent = `答案：${conciseAnswer(result.answer)}`
+  answer.textContent = `答案：${conciseAnswer(item.answer)}`
   row.append(question, answer)
-  qas.prepend(row)
+  els.qas.prepend(row)
 }
+
+/** Says what the agents are doing right now; falls back to a calm line when they are idle. */
+function renderActivity() {
+  if (activeRuns.size > 0) {
+    setStatus(`Agent ${[...new Set(activeRuns.values())].sort().join('、')} 处理中…`)
+  } else if (current?.listening) {
+    setStatus('正在录音，等待新问题…')
+  } else {
+    setStatus('空闲。')
+  }
+}
+
+function refreshSessionsSoon() {
+  clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => { void refreshCurrent().catch(() => undefined) }, 600)
+}
+
 function renderDrafts() {
-  qaPartial.textContent = [...drafts.entries()]
-    .map(([, draft]) => `Agent ${draft.slot} 正在写…\nQ · ${draft.question}\nA · ${draft.answer}`)
+  els.qaPartial.textContent = [...drafts.values()]
+    .map((draft) => `Agent ${draft.slot} 正在写…\nQ · ${draft.question}\nA · ${draft.answer}`)
     .join('\n\n')
 }
-async function request(path, method = 'GET', body) {
-  const response = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error ?? 'Request failed')
-  return data
-}
-async function loadTimeline() {
-  const data = await request(`/sessions/${sessionId}/timeline`)
-  transcripts.replaceChildren()
-  qas.replaceChildren()
+
+function clearLists() {
+  els.transcripts.replaceChildren()
+  els.qas.replaceChildren()
   transcriptSequences.clear()
   qaIds.clear()
   drafts.clear()
+  activeRuns.clear()
   renderDrafts()
+  els.partial.textContent = '等待语音…'
+}
+
+async function loadTimeline() {
+  const data = await request(`/sessions/${sessionId}/timeline`)
+  clearLists()
   data.transcripts.forEach(appendTranscript)
   data.qas.filter((item) => item.status === 'shown').forEach(appendQa)
 }
-function connectEvents() {
-  events?.close()
-  events = new EventSource(`/sessions/${sessionId}/events`)
-  events.onmessage = (message) => {
-    const event = JSON.parse(message.data)
-    if (event.type === 'listening.started') setStatus(`Listening on microphone ${event.microphoneDevice}`)
-    if (event.type === 'listening.stopped') setStatus('Stopped')
-    if (event.type === 'transcript.partial') partial.textContent = event.text
-    if (event.type === 'transcript.final') { partial.textContent = 'Waiting for speech…'; appendTranscript(event.transcript) }
-    if (event.type === 'agent.started') setStatus(`Agent ${event.slot} 处理中…`)
-    if (event.type === 'qa.partial') { drafts.set(event.runId, { slot: event.slot, question: event.question, answer: event.answer }); renderDrafts() }
-    if (event.type === 'qa.completed') { drafts.delete(event.runId); renderDrafts(); appendQa(event); setStatus(`Agent ${event.slot} 已回答`) }
-    if (event.type === 'agent.finished') { drafts.delete(event.runId); renderDrafts() }
-    if (event.type === 'agent.failed') { drafts.delete(event.runId); renderDrafts(); setStatus(`Agent ${event.slot} 已跳过：${event.message}`) }
-    if (event.type === 'listening.failed') { setStatus(`录音中断：${event.message}`); startButton.disabled = false; stopButton.disabled = true }
-  }
-  events.onerror = () => setStatus('Live connection interrupted; reconnecting…')
+
+/* ---------- sessions ---------- */
+
+function sessionDetail(item) {
+  if (item.listening) return '正在录音'
+  if (item.activeSlots.length > 0) return `Agent ${item.activeSlots.join('、')} 回答中`
+  return item.transcriptVersion === 0 ? '空会话' : `${item.transcriptVersion} 段转录`
 }
-async function activateSession(id) {
-  sessionId = id
-  sessionStorage.setItem(sessionStorageKey, sessionId)
-  const state = await request(`/sessions/${sessionId}`)
-  sessionTitle.textContent = `会话 ${sessionId.slice(0, 8)}`
-  await loadTimeline()
-  connectEvents()
-  startButton.disabled = state.listening
-  stopButton.disabled = !state.listening
-  setStatus(state.activeAgent === null
-    ? `Session ${sessionId.slice(0, 8)} ready`
-    : `Agent ${state.activeAgent} is answering…`)
+
+async function loadSessions() {
+  const items = await request('/sessions')
+  liveId = items.find((item) => item.listening)?.id ?? null
+  els.sessions.replaceChildren()
+  for (const item of items) {
+    const button = document.createElement('button')
+    button.className = `session${item.id === sessionId ? ' active' : ''}`
+    button.textContent = timeLabel(item.createdAtMs)
+    const detail = document.createElement('small')
+    detail.textContent = sessionDetail(item)
+    button.append(detail)
+    button.onclick = () => { activateSession(item.id).catch((error) => setStatus(error.message)) }
+    els.sessions.append(button)
+  }
+  updateControls()
+  return items
+}
+
+async function refreshCurrent() {
+  if (sessionId === null) { current = null } else { current = await request(`/sessions/${sessionId}`) }
   await loadSessions()
 }
-createButton.onclick = async () => {
-  createButton.disabled = true
-  try {
-    const session = await request('/sessions', 'POST', { language: 'zh-CN' })
-    sessionStorage.setItem(sessionStorageKey, session.id)
-    await activateSession(session.id)
-  } catch (error) { setStatus(error.message) } finally { createButton.disabled = false }
-}
-startButton.onclick = async () => {
-  if (sessionId === null) {
-    await createButton.onclick()
+
+function updateControls() {
+  const noDevice = devices.length === 0
+  els.start.disabled = noDevice || liveId !== null
+  els.stop.disabled = liveId === null
+  els.device.disabled = noDevice || liveId !== null
+  if (liveId !== null && liveId !== sessionId) {
+    setStatus('另一个会话正在录音，点“停止录音”后才能开始新的。')
   }
-  startButton.disabled = true
+}
+
+async function activateSession(id) {
+  sessionId = id
+  remember.set(SESSION_KEY, id, sessionStorage)
+  current = await request(`/sessions/${id}`)
+  els.title.textContent = `会话 ${timeLabel(current.createdAtMs)}`
+  await loadTimeline()
+  connectEvents()
+  if (current.listening) {
+    setStatus('正在录音…')
+  } else {
+    setStatus(current.transcriptVersion > 0 ? '这是历史会话。点“开始录音”会新建一个会话。' : '点“开始录音”开始。')
+  }
+  await loadSessions()
+}
+
+async function createSession() {
+  const created = await request('/sessions', 'POST', { language: 'zh-CN' })
+  await activateSession(created.id)
+}
+
+/* ---------- recording ---------- */
+
+async function startListening() {
+  els.start.disabled = true
   try {
-    await request(`/sessions/${sessionId}/listening/start`, 'POST', { microphoneDevice: device.value })
-    stopButton.disabled = false
-    await loadSessions()
-  } catch (error) { setStatus(error.message); startButton.disabled = false }
+    if (sessionId === null || current === null || current.transcriptVersion > 0 || current.listening) {
+      await createSession()
+    }
+    remember.set(DEVICE_KEY, els.device.value)
+    await request(`/sessions/${sessionId}/listening/start`, 'POST', { microphoneDevice: els.device.value })
+    await refreshCurrent()
+  } catch (error) {
+    setStatus(error.message)
+    if (error.code === 'settings') void openSettings(error.message)
+    updateControls()
+  }
 }
-stopButton.onclick = async () => {
-  stopButton.disabled = true
+
+async function stopListening() {
+  if (liveId === null) return
+  els.stop.disabled = true
   try {
-    await request(`/sessions/${sessionId}/listening/stop`, 'POST', {})
-    startButton.disabled = false
-    await loadSessions()
-  } catch (error) { setStatus(error.message); stopButton.disabled = false }
+    await request(`/sessions/${liveId}/listening/stop`, 'POST', {})
+    await refreshCurrent()
+    setStatus('已停止录音。')
+  } catch (error) {
+    setStatus(error.message)
+    updateControls()
+  }
 }
-const savedSessionId = sessionStorage.getItem(sessionStorageKey)
-if (savedSessionId !== null) {
-  activateSession(savedSessionId).catch(() => {
-    sessionStorage.removeItem(sessionStorageKey)
-    setStatus('Create a session to begin.')
-  })
-} else {
-  loadSessions()
-    .then(async () => {
-      const items = await request('/sessions')
-      if (items.length > 0) await activateSession(items[0].id)
-    })
-    .catch((error) => setStatus(error.message))
+
+function connectEvents() {
+  events?.close()
+  const source = new EventSource(`/sessions/${sessionId}/events`)
+  events = source
+  source.onmessage = (message) => {
+    const event = JSON.parse(message.data)
+    if (event.type === 'listening.started') { setStatus(`正在录音：${deviceName(event.microphoneDevice)}`); void refreshCurrent() }
+    if (event.type === 'listening.stopped') { void refreshCurrent() }
+    if (event.type === 'listening.failed') { setStatus(`录音中断：${event.message}`); void refreshCurrent() }
+    if (event.type === 'transcript.partial') els.partial.textContent = event.text
+    if (event.type === 'transcript.final') { els.partial.textContent = '等待语音…'; appendTranscript(event.transcript); refreshSessionsSoon() }
+    if (event.type === 'agent.started') { activeRuns.set(event.runId, event.slot); renderActivity() }
+    if (event.type === 'qa.partial') { drafts.set(event.runId, { slot: event.slot, question: event.question, answer: event.answer }); renderDrafts() }
+    if (event.type === 'qa.completed') { drafts.delete(event.runId); renderDrafts(); appendQa(event) }
+    if (event.type === 'agent.finished') { drafts.delete(event.runId); activeRuns.delete(event.runId); renderDrafts(); renderActivity(); refreshSessionsSoon() }
+    if (event.type === 'agent.failed') {
+      drafts.delete(event.runId); activeRuns.delete(event.runId); renderDrafts()
+      setStatus(`Agent ${event.slot} 已跳过：${event.message}`)
+      refreshSessionsSoon()
+    }
+  }
+  source.onerror = () => setStatus('和服务的连接断了，正在重连…')
 }
+
+/* ---------- microphones ---------- */
+
+async function loadDevices() {
+  let data
+  try { data = await request('/devices') } catch (error) { data = { devices: [], error: error.message } }
+  devices = data.devices
+  els.device.replaceChildren()
+  if (devices.length === 0) {
+    const option = new Option(data.error ?? '没有找到麦克风', '', true, true)
+    option.disabled = true
+    els.device.append(option)
+    setStatus(data.error ?? '没有找到麦克风。')
+    updateControls()
+    return
+  }
+  for (const device of devices) els.device.append(new Option(device.name, device.id))
+  const saved = remember.get(DEVICE_KEY)
+  const preferred = devices.find((device) => device.id === saved)
+    ?? devices.find((device) => /macbook|built-?in|内置/i.test(device.name))
+    ?? devices[0]
+  els.device.value = preferred.id
+  updateControls()
+}
+
+/* ---------- settings ---------- */
+
+function placeholderFor(secret) {
+  return secret.set ? `已设置 ${secret.hint}${secret.source === 'env' ? '（来自环境变量）' : ''}` : '尚未设置'
+}
+
+async function openSettings(message = '') {
+  els.settingsError.textContent = message
+  try {
+    const status = await request('/settings')
+    els.settingsPath.textContent = status.path ?? '内存'
+    els.mimoKey.value = ''
+    els.aliyunAppKey.value = ''
+    els.aliyunToken.value = ''
+    els.mimoKey.placeholder = placeholderFor(status.mimo.apiKey)
+    els.aliyunAppKey.placeholder = placeholderFor(status.aliyun.appKey)
+    els.aliyunToken.placeholder = placeholderFor(status.aliyun.token)
+    els.mimoModel.value = status.mimo.model
+  } catch (error) {
+    els.settingsError.textContent = error.message
+  }
+  if (!els.dialog.open) els.dialog.showModal()
+}
+
+els.form.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const mimo = { model: els.mimoModel.value.trim() }
+  const aliyun = {}
+  if (els.mimoKey.value.trim() !== '') mimo.apiKey = els.mimoKey.value.trim()
+  if (els.aliyunAppKey.value.trim() !== '') aliyun.appKey = els.aliyunAppKey.value.trim()
+  if (els.aliyunToken.value.trim() !== '') aliyun.token = els.aliyunToken.value.trim()
+  try {
+    const status = await request('/settings', 'PUT', { mimo, aliyun })
+    els.dialog.close()
+    setStatus(status.ready.answering && status.ready.transcription ? '设置已保存，可以开始录音了。' : '设置已保存，但还有密钥没填。')
+  } catch (error) {
+    els.settingsError.textContent = error.message
+  }
+})
+els.cancel.onclick = () => els.dialog.close()
+els.openSettings.onclick = () => { void openSettings() }
+
+/* ---------- start-up ---------- */
+
+els.newSession.onclick = () => { createSession().catch((error) => setStatus(error.message)) }
+els.start.onclick = () => { void startListening() }
+els.stop.onclick = () => { void stopListening() }
+
+async function init() {
+  await loadDevices()
+  const items = await loadSessions()
+  const saved = remember.get(SESSION_KEY, sessionStorage)
+  const target = items.find((item) => item.id === saved) ?? items.find((item) => item.listening) ?? items[0]
+  if (target !== undefined) await activateSession(target.id)
+  const settings = await request('/settings')
+  if (!settings.ready.answering || !settings.ready.transcription) {
+    await openSettings('先填好密钥才能使用：回答需要 MiMo API Key，语音识别需要阿里云 AppKey 和 Token。')
+  }
+}
+
+init().catch((error) => setStatus(error.message))

@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createApplication } from '../src/bootstrap.js'
-import { loadConfig } from '../src/config/env.js'
 import { ScriptedRunner, qaText, say, say1 } from './helpers.js'
 
 function withDatabase(work: (path: string) => Promise<void>): Promise<void> {
@@ -13,7 +12,7 @@ function withDatabase(work: (path: string) => Promise<void>): Promise<void> {
 }
 
 const open = (path: string, runner: ScriptedRunner) =>
-  createApplication(loadConfig({}), { runner, databasePath: path, controller: { autoStartLanes: false } })
+  createApplication({ env: {}, settingsPath: null, runner, databasePath: path, controller: { autoStartLanes: false } })
 
 test('a run left running by a crash is cancelled on restart and the lane works again', () => withDatabase(async (path) => {
   const first = open(path, new ScriptedRunner(() => say('-')))

@@ -1,3 +1,6 @@
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 export interface AppConfig {
   readonly databasePath: string
   readonly aliyun: {
@@ -14,7 +17,7 @@ export interface AppConfig {
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
-    databasePath: environment.LISTEN_INSTANT_ANS_DATABASE ?? 'data/listen-instant-ans.sqlite',
+    databasePath: environment.LISTEN_INSTANT_ANS_DATABASE ?? join(homedir(), '.listen-instant-ans', 'data.sqlite'),
     aliyun: {
       appKey: environment.ALIYUN_NLS_APP_KEY ?? environment.ALIYUN_APP_ID,
       token: environment.ALIYUN_NLS_TOKEN ?? environment.ALIYUN_TMP_TOKEN,
