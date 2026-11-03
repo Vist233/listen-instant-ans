@@ -24,6 +24,14 @@ class FixedRunner implements QaRunner {
   }
 }
 
+class CapturingRunner implements QaRunner {
+  readonly inputs: Parameters<QaRunner['run']>[0][] = []
+  async *run(input: Parameters<QaRunner['run']>[0]): AsyncIterable<Partial<QaResult>> {
+    this.inputs.push(input)
+    yield answer
+  }
+}
+
 function createRepository(): SessionRepository {
   return new SessionRepository(openDatabase(':memory:'))
 }
@@ -78,4 +86,23 @@ test('ignore never advances the handoff cursor and throttles the next attempt', 
     decideNextTurn(state, state.lastCompletedSlot, 201),
     { slot: 'B', delayMs: EMPTY_QA_MINIMUM_INTERVAL_MS - 101 },
   )
+})
+
+test('each agent receives its prior history, all missing speech, and every peer QA', async () => {
+  const repository = createRepository()
+  const events = new EventHub()
+  const runner = new CapturingRunner()
+  const controller = new SessionController(repository, runner, events, () => 100)
+  controller.start('session-3', 'zh-CN')
+  const done = new Promise<void>((resolve) => events.subscribe((event) => { if (event.type === 'qa.completed' && event.slot === 'B') resolve() }))
+  controller.appendFinalTranscript('session-3', { sequence: 1, startedAtMs: 0, endedAtMs: 1, text: '第一句', confidence: 1 })
+  await done
+  assert.equal(runner.inputs.length, 2)
+  assert.deepEqual(runner.inputs[0].historyTranscripts, [])
+  assert.deepEqual(runner.inputs[0].transcripts.map((item) => item.text), ['第一句'])
+  assert.deepEqual(runner.inputs[1].historyTranscripts, [])
+  assert.deepEqual(runner.inputs[1].transcripts.map((item) => item.text), ['第一句'])
+  assert.equal(runner.inputs[1].peerQas.length, 1)
+  assert.equal(repository.get('session-3').historyTranscriptVersionA, 1)
+  assert.equal(repository.get('session-3').historyTranscriptVersionB, 1)
 })

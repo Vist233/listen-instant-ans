@@ -1,5 +1,5 @@
 import type { AgentSlot } from '@listen-instant-ans/contracts'
-import type { SessionState } from './session-state.js'
+import { historyTranscriptVersionFor, type SessionState } from './session-state.js'
 
 export const EMPTY_QA_MINIMUM_INTERVAL_MS = 5_000
 
@@ -17,11 +17,12 @@ export function decideNextTurn(
   previousSlot: AgentSlot | null,
   nowMs: number,
 ): TurnDecision | null {
-  if (state.activeAgent !== null || state.transcriptVersion <= state.handoffVersion) {
+  const slot = nextSlot(previousSlot)
+  if (state.activeAgent !== null || state.transcriptVersion <= historyTranscriptVersionFor(state, slot)) {
     return null
   }
   const delayMs = state.consecutiveEmptyQa === 0
     ? 0
     : Math.max(0, state.lastAgentRequestAtMs + EMPTY_QA_MINIMUM_INTERVAL_MS - nowMs)
-  return { slot: nextSlot(previousSlot), delayMs }
+  return { slot, delayMs }
 }

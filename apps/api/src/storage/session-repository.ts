@@ -7,6 +7,8 @@ interface SessionRow {
   language: string
   transcript_version: number
   handoff_version: number
+  history_transcript_version_a: number
+  history_transcript_version_b: number
   active_agent: 'A' | 'B' | null
   prepared_qa_for_a: string | null
   prepared_qa_for_b: string | null
@@ -25,6 +27,8 @@ function toState(row: SessionRow): SessionState {
     language: row.language,
     transcriptVersion: row.transcript_version,
     handoffVersion: row.handoff_version,
+    historyTranscriptVersionA: row.history_transcript_version_a,
+    historyTranscriptVersionB: row.history_transcript_version_b,
     activeAgent: row.active_agent,
     preparedQaForA: parsePreparedQa(row.prepared_qa_for_a),
     preparedQaForB: parsePreparedQa(row.prepared_qa_for_b),
@@ -51,6 +55,14 @@ export class SessionRepository {
       throw new Error(`Session not found: ${id}`)
     }
     return toState(row)
+  }
+
+  list(): Array<{ id: string; language: string; createdAtMs: number; updatedAtMs: number; transcriptVersion: number; activeAgent: 'A' | 'B' | null }> {
+    return this.database.prepare(`
+      SELECT id, language, created_at_ms AS createdAtMs, updated_at_ms AS updatedAtMs,
+        transcript_version AS transcriptVersion, active_agent AS activeAgent
+      FROM sessions ORDER BY updated_at_ms DESC, created_at_ms DESC
+    `).all() as Array<{ id: string; language: string; createdAtMs: number; updatedAtMs: number; transcriptVersion: number; activeAgent: 'A' | 'B' | null }>
   }
 
   appendTranscript(sessionId: string, transcript: TranscriptFinal, nowMs: number): SessionState {
@@ -89,6 +101,28 @@ export class SessionRepository {
       text: row.text,
       confidence: row.confidence,
     }))
+  }
+
+  listTranscriptsUntil(sessionId: string, version: number): TranscriptFinal[] {
+    return this.listTranscriptsAfter(sessionId, 0).filter((item) => item.sequence <= version)
+  }
+
+  listPeerQas(sessionId: string, slot: 'A' | 'B'): QaResult[] {
+    const peer = slot === 'A' ? 'B' : 'A'
+    const rows = this.database.prepare(`
+      SELECT qas.status, qas.question, qas.answer, qas.sources_json AS sourcesJson, qas.confidence
+      FROM qas JOIN agent_runs ON agent_runs.id = qas.run_id
+      WHERE agent_runs.session_id = ? AND agent_runs.slot = ? AND qas.status != 'ignore'
+      ORDER BY agent_runs.ended_at_ms ASC, agent_runs.id ASC
+    `).all(sessionId, peer) as Array<{ status: QaResult['status']; question: string | null; answer: string | null; sourcesJson: string; confidence: number }>
+    return rows.map((row) => ({ ...row, sources: JSON.parse(row.sourcesJson) } as QaResult))
+  }
+
+  advanceAgentHistory(sessionId: string, slot: 'A' | 'B', version: number, nowMs: number): SessionState {
+    const column = slot === 'A' ? 'history_transcript_version_a' : 'history_transcript_version_b'
+    this.database.prepare(`UPDATE sessions SET ${column} = MAX(${column}, ?), updated_at_ms = ? WHERE id = ?`)
+      .run(version, nowMs, sessionId)
+    return this.get(sessionId)
   }
 
   timeline(sessionId: string): object {

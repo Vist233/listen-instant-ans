@@ -79,6 +79,10 @@ const server = createServer(async (request, response) => {
       sendJson(response, 201, web.create(language))
       return
     }
+    if (request.method === 'GET' && url.pathname === '/sessions') {
+      sendJson(response, 200, web.list())
+      return
+    }
     const stateMatch = url.pathname.match(/^\/sessions\/([^/]+)$/)
     if (request.method === 'GET' && stateMatch !== null) {
       sendJson(response, 200, web.snapshot(stateMatch[1]))

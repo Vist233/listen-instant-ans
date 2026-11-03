@@ -3,6 +3,8 @@ const partial = document.querySelector('#partial')
 const qaPartial = document.querySelector('#qa-partial')
 const transcripts = document.querySelector('#transcripts')
 const qas = document.querySelector('#qas')
+const sessionList = document.querySelector('#sessions')
+const sessionTitle = document.querySelector('#session-title')
 const createButton = document.querySelector('#create')
 const startButton = document.querySelector('#start')
 const stopButton = document.querySelector('#stop')
@@ -14,6 +16,21 @@ const qaRunIds = new Set()
 const sessionStorageKey = 'listenInstantAns.sessionId'
 
 function setStatus(message) { status.textContent = message }
+function sessionLabel(session) { return new Date(session.createdAtMs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
+async function loadSessions() {
+  const items = await request('/sessions')
+  sessionList.replaceChildren()
+  for (const item of items) {
+    const button = document.createElement('button')
+    button.className = `session${item.id === sessionId ? ' active' : ''}`
+    button.textContent = sessionLabel(item)
+    const detail = document.createElement('small')
+    detail.textContent = item.listening ? '正在录音' : item.activeAgent ? `Agent ${item.activeAgent} 回答中` : '已结束'
+    button.append(detail)
+    button.onclick = () => activateSession(item.id)
+    sessionList.append(button)
+  }
+}
 function appendTranscript(item) {
   if (transcriptSequences.has(item.sequence)) return
   transcriptSequences.add(item.sequence)
@@ -74,6 +91,7 @@ function connectEvents() {
 async function activateSession(id) {
   sessionId = id
   const state = await request(`/sessions/${sessionId}`)
+  sessionTitle.textContent = `会话 ${sessionId.slice(0, 8)}`
   await loadTimeline()
   connectEvents()
   startButton.disabled = state.listening
@@ -81,6 +99,7 @@ async function activateSession(id) {
   setStatus(state.activeAgent === null
     ? `Session ${sessionId.slice(0, 8)} ready`
     : `Agent ${state.activeAgent} is answering…`)
+  await loadSessions()
 }
 createButton.onclick = async () => {
   createButton.disabled = true
@@ -91,10 +110,14 @@ createButton.onclick = async () => {
   } catch (error) { setStatus(error.message) } finally { createButton.disabled = false }
 }
 startButton.onclick = async () => {
+  if (sessionId === null) {
+    await createButton.onclick()
+  }
   startButton.disabled = true
   try {
     await request(`/sessions/${sessionId}/listening/start`, 'POST', { microphoneDevice: device.value })
     stopButton.disabled = false
+    await loadSessions()
   } catch (error) { setStatus(error.message); startButton.disabled = false }
 }
 stopButton.onclick = async () => {
@@ -102,6 +125,7 @@ stopButton.onclick = async () => {
   try {
     await request(`/sessions/${sessionId}/listening/stop`, 'POST', {})
     startButton.disabled = false
+    await loadSessions()
   } catch (error) { setStatus(error.message); stopButton.disabled = false }
 }
 const savedSessionId = sessionStorage.getItem(sessionStorageKey)
@@ -110,4 +134,4 @@ if (savedSessionId !== null) {
     sessionStorage.removeItem(sessionStorageKey)
     setStatus('Create a session to begin.')
   })
-}
+} else loadSessions().catch((error) => setStatus(error.message))

@@ -10,12 +10,18 @@ export interface SessionState {
   readonly language: string
   readonly transcriptVersion: number
   readonly handoffVersion: number
+  readonly historyTranscriptVersionA: number
+  readonly historyTranscriptVersionB: number
   readonly activeAgent: AgentSlot | null
   readonly preparedQaForA: PreparedQa | null
   readonly preparedQaForB: PreparedQa | null
   readonly lastAgentRequestAtMs: number
   readonly consecutiveEmptyQa: number
   readonly lastCompletedSlot: AgentSlot | null
+}
+
+export function historyTranscriptVersionFor(state: SessionState, slot: AgentSlot): number {
+  return slot === 'A' ? state.historyTranscriptVersionA : state.historyTranscriptVersionB
 }
 
 export function oppositeSlot(slot: AgentSlot): AgentSlot {

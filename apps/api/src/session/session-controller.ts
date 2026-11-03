@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { qaResultSchema, type AgentSlot, type QaResult, type TranscriptFinal } from '@listen-instant-ans/contracts'
 import { EventHub } from '../events/event-hub.js'
 import type { QaRunner } from '../agent/qa-runner.js'
-import { preparedQaFor } from './session-state.js'
+import { historyTranscriptVersionFor } from './session-state.js'
 import { decideNextTurn } from './turn-scheduler.js'
 import { SessionRepository } from '../storage/session-repository.js'
 
@@ -79,7 +79,8 @@ export class SessionController {
   private async startTurn(sessionId: string, slot: AgentSlot): Promise<void> {
     const state = this.sessions.get(sessionId)
     const snapshotVersion = state.transcriptVersion
-    const transcripts = this.sessions.listTranscriptsAfter(sessionId, state.handoffVersion)
+    const historyVersion = historyTranscriptVersionFor(state, slot)
+    const transcripts = this.sessions.listTranscriptsAfter(sessionId, historyVersion)
     if (transcripts.length === 0) {
       return
     }
@@ -96,13 +97,15 @@ export class SessionController {
         slot,
         runId,
         transcripts,
-        peerQa: preparedQaFor(state, slot)?.result ?? null,
+        historyTranscripts: this.sessions.listTranscriptsUntil(sessionId, historyVersion),
+        peerQas: this.sessions.listPeerQas(sessionId, slot),
       }, controller.signal)) {
         merged = { ...merged, ...partial }
         this.events.publish({ type: 'qa.partial', sessionId, runId, slot, partial })
       }
       const result = qaResultSchema.parse(merged)
       this.sessions.completeRun(sessionId, slot, runId, result, snapshotVersion, this.now())
+      this.sessions.advanceAgentHistory(sessionId, slot, snapshotVersion, this.now())
       this.#lastSlot.set(sessionId, slot)
       this.events.publish({ type: 'qa.completed', sessionId, runId, slot, result })
     } catch (error) {

@@ -7,19 +7,19 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <main>
-      <header>
-        <p class="eyebrow">LIVE CLASSROOM COPILOT</p>
-        <h1>Listen Instant Ans</h1>
-        <p id="status" class="status">Create a session to begin.</p>
-      </header>
-      <section class="controls" aria-label="session controls">
-        <label>Microphone <input id="device" value="1" inputmode="numeric"></label>
-        <button id="create">New session</button>
-        <button id="start" disabled>Start listening</button>
-        <button id="stop" disabled>Stop</button>
-      </section>
-      <section class="grid">
+    <main class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-title"><h1>Listen Instant Ans</h1><button id="create">新建会话</button></div>
+        <nav id="sessions" aria-label="会话列表"></nav>
+      </aside>
+      <section class="content">
+        <header><h2 id="session-title">选择或新建会话</h2><p id="status" class="status">尚未选择会话。</p></header>
+        <section class="controls" aria-label="录音控制">
+          <label>麦克风 <input id="device" value="1" inputmode="numeric"></label>
+          <button id="start" disabled>开始录音</button>
+          <button id="stop" disabled>停止录音</button>
+        </section>
+        <section class="grid">
         <article>
           <h2>Live transcript</h2>
           <p id="partial" class="partial">Waiting for speech…</p>
@@ -30,6 +30,7 @@
           <p id="qa-partial" class="partial" aria-live="polite"></p>
           <ol id="qas" class="timeline"></ol>
         </article>
+        </section>
       </section>
     </main>
     <script type="module" src="/app.js"></script>

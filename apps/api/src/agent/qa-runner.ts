@@ -5,7 +5,8 @@ export interface QaRunInput {
   readonly slot: AgentSlot
   readonly runId: string
   readonly transcripts: readonly TranscriptFinal[]
-  readonly peerQa: QaResult | null
+  readonly historyTranscripts: readonly TranscriptFinal[]
+  readonly peerQas: readonly QaResult[]
 }
 
 export interface QaRunner {

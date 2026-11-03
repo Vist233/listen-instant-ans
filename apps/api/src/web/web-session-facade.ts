@@ -18,6 +18,10 @@ export class WebSessionFacade {
     return { id, language, listening: false }
   }
 
+  list(): Array<{ id: string; language: string; createdAtMs: number; updatedAtMs: number; transcriptVersion: number; activeAgent: 'A' | 'B' | null; listening: boolean }> {
+    return this.sessions.list().map((session) => ({ ...session, listening: this.runtime.isListening(session.id) }))
+  }
+
   snapshot(sessionId: string): object {
     return { ...this.sessions.get(sessionId), listening: this.runtime.isListening(sessionId) }
   }

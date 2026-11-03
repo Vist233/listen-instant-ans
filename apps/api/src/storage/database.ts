@@ -76,5 +76,9 @@ export function openDatabase(path: string): DatabaseSync {
       FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
   `)
+  const columns = database.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
+  const names = new Set(columns.map((column) => column.name))
+  if (!names.has('history_transcript_version_a')) database.exec('ALTER TABLE sessions ADD COLUMN history_transcript_version_a INTEGER NOT NULL DEFAULT 0')
+  if (!names.has('history_transcript_version_b')) database.exec('ALTER TABLE sessions ADD COLUMN history_transcript_version_b INTEGER NOT NULL DEFAULT 0')
   return database
 }

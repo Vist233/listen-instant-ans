@@ -2,6 +2,8 @@ import type { Agent } from '@mastra/core/agent'
 import type { QaResult } from '@listen-instant-ans/contracts'
 import { buildQaPrompt, qaSystemInstructions } from './qa-prompt.js'
 import type { QaRunInput, QaRunner } from './qa-runner.js'
+import type { AppConfig } from '../config/env.js'
+import { createOpenCodeQaAgents } from './opencode-mastra-agents.js'
 
 type QaAgent = Pick<Agent, 'stream'>
 
@@ -11,12 +13,21 @@ type QaAgent = Pick<Agent, 'stream'>
  * the upstream model cache the best chance to reuse its prefix.
  */
 export class MastraQaRunner implements QaRunner {
-  constructor(
-    private readonly agents: Readonly<Record<'A' | 'B', QaAgent>>,
-  ) {}
+  readonly #agents = new Map<string, Readonly<Record<'A' | 'B', QaAgent>>>()
+
+  constructor(private readonly config: AppConfig['opencode']) {}
+
+  private agentsFor(sessionId: string): Readonly<Record<'A' | 'B', QaAgent>> {
+    let agents = this.#agents.get(sessionId)
+    if (agents === undefined) {
+      agents = createOpenCodeQaAgents(this.config, sessionId)
+      this.#agents.set(sessionId, agents)
+    }
+    return agents
+  }
 
   async *run(input: QaRunInput, signal: AbortSignal): AsyncIterable<Partial<QaResult>> {
-    const output = await this.agents[input.slot].stream(
+    const output = await this.agentsFor(input.sessionId)[input.slot].stream(
       [{ role: 'user', content: buildQaPrompt(input) }],
       {
         runId: input.runId,
