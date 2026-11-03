@@ -12,7 +12,8 @@ const device = document.querySelector('#device')
 let sessionId = null
 let events = null
 const transcriptSequences = new Set()
-const qaRunIds = new Set()
+const qaIds = new Set()
+const drafts = new Map()
 const sessionStorageKey = 'listenInstantAns.sessionId'
 const ANSWER_MAX_LENGTH = 200
 
@@ -47,9 +48,10 @@ function appendTranscript(item) {
   row.textContent = item.text
   transcripts.append(row)
 }
-function appendQa(result, slot, runId) {
-  if (runId !== undefined && qaRunIds.has(runId)) return
-  if (runId !== undefined) qaRunIds.add(runId)
+function appendQa(result) {
+  const id = result.qaId ?? result.id
+  if (qaIds.has(id)) return
+  qaIds.add(id)
   const row = document.createElement('li')
   const question = document.createElement('p')
   question.className = 'qa-question'
@@ -60,11 +62,10 @@ function appendQa(result, slot, runId) {
   row.append(question, answer)
   qas.prepend(row)
 }
-function renderQaPartial(partialResult, slot) {
-  const lines = [`Agent ${slot} is drafting…`]
-  if (partialResult.question) lines.push(`Q · ${partialResult.question}`)
-  if (partialResult.answer) lines.push(`A · ${partialResult.answer}`)
-  qaPartial.textContent = lines.join('\n')
+function renderDrafts() {
+  qaPartial.textContent = [...drafts.entries()]
+    .map(([, draft]) => `Agent ${draft.slot} 正在写…\nQ · ${draft.question}\nA · ${draft.answer}`)
+    .join('\n\n')
 }
 async function request(path, method = 'GET', body) {
   const response = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
@@ -77,9 +78,11 @@ async function loadTimeline() {
   transcripts.replaceChildren()
   qas.replaceChildren()
   transcriptSequences.clear()
-  qaRunIds.clear()
+  qaIds.clear()
+  drafts.clear()
+  renderDrafts()
   data.transcripts.forEach(appendTranscript)
-  data.qas.filter(hasQuestion).forEach((item) => appendQa(item, item.slot, item.runId))
+  data.qas.filter((item) => item.status === 'shown').forEach(appendQa)
 }
 function connectEvents() {
   events?.close()
@@ -90,14 +93,12 @@ function connectEvents() {
     if (event.type === 'listening.stopped') setStatus('Stopped')
     if (event.type === 'transcript.partial') partial.textContent = event.text
     if (event.type === 'transcript.final') { partial.textContent = 'Waiting for speech…'; appendTranscript(event.transcript) }
-    if (event.type === 'agent.started') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} 处理中…`) }
-    if (event.type === 'qa.partial') qaPartial.textContent = ''
-    if (event.type === 'qa.completed') {
-      qaPartial.textContent = ''
-      if (hasQuestion(event.result)) appendQa(event.result, event.slot, event.runId)
-      setStatus(`Agent ${event.slot} completed`)
-    }
-    if (event.type === 'agent.failed') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} failed: ${event.message}`) }
+    if (event.type === 'agent.started') setStatus(`Agent ${event.slot} 处理中…`)
+    if (event.type === 'qa.partial') { drafts.set(event.runId, { slot: event.slot, question: event.question, answer: event.answer }); renderDrafts() }
+    if (event.type === 'qa.completed') { drafts.delete(event.runId); renderDrafts(); appendQa(event); setStatus(`Agent ${event.slot} 已回答`) }
+    if (event.type === 'agent.finished') { drafts.delete(event.runId); renderDrafts() }
+    if (event.type === 'agent.failed') { drafts.delete(event.runId); renderDrafts(); setStatus(`Agent ${event.slot} 已跳过：${event.message}`) }
+    if (event.type === 'listening.failed') { setStatus(`录音中断：${event.message}`); startButton.disabled = false; stopButton.disabled = true }
   }
   events.onerror = () => setStatus('Live connection interrupted; reconnecting…')
 }

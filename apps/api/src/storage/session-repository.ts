@@ -1,28 +1,66 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { QaResult, TranscriptFinal } from '@listen-instant-ans/contracts'
-import { historyTranscriptVersionFor, type PreparedQa, type SessionState } from '../session/session-state.js'
+import type { AgentSlot, QaStatus, TranscriptFinal } from '@listen-instant-ans/contracts'
 
-interface SessionRow {
-  id: string
-  language: string
-  transcript_version: number
-  handoff_version: number
-  history_transcript_version_a: number
-  history_transcript_version_b: number
-  active_agent: 'A' | 'B' | null
-  prepared_qa_for_a: string | null
-  prepared_qa_for_b: string | null
-  last_agent_request_at_ms: number
-  consecutive_empty_qa: number
-  consecutive_failures: number
-  last_completed_slot: 'A' | 'B' | null
+export interface SessionInfo {
+  readonly id: string
+  readonly language: string
+  readonly createdAtMs: number
+  readonly updatedAtMs: number
+  readonly transcriptVersion: number
 }
 
-export interface SlotTurn {
-  readonly transcripts: TranscriptFinal[]
-  readonly peerQas: QaResult[]
-  readonly result: QaResult
-  readonly peerQaCount: number
+export interface StoredQa {
+  readonly id: number
+  readonly runId: string
+  readonly slot: AgentSlot
+  readonly question: string
+  readonly answer: string
+  readonly status: QaStatus
+  readonly createdAtMs: number
+}
+
+/** A finished request of one lane, exactly as it was sent and answered. */
+export interface LaneTurn {
+  readonly inputText: string
+  readonly outputText: string
+  readonly endVersion: number
+  readonly peerCursor: number
+}
+
+export interface StartRunInput {
+  readonly sessionId: string
+  readonly slot: AgentSlot
+  readonly runId: string
+  readonly startVersion: number
+  readonly endVersion: number
+  readonly inputText: string
+  readonly peerCursor: number
+  readonly nowMs: number
+}
+
+export interface SaveQaInput {
+  readonly sessionId: string
+  readonly runId: string
+  readonly slot: AgentSlot
+  readonly question: string
+  readonly answer: string
+  readonly status: QaStatus
+  readonly nowMs: number
+}
+
+export interface RunSummary {
+  readonly id: string
+  readonly slot: AgentSlot
+  readonly status: 'running' | 'completed' | 'cancelled'
+  readonly startVersion: number
+  readonly endVersion: number
+  readonly outputText: string | null
+  readonly startedAtMs: number
+  readonly endedAtMs: number | null
+  readonly errorMessage: string | null
+  readonly inputTokens: number | null
+  readonly cachedInputTokens: number | null
+  readonly firstTokenMs: number | null
 }
 
 export interface RunUsage {
@@ -31,78 +69,77 @@ export interface RunUsage {
   readonly firstTokenMs?: number
 }
 
-function parsePreparedQa(value: string | null): PreparedQa | null {
-  return value === null ? null : JSON.parse(value) as PreparedQa
+interface SessionRow {
+  id: string
+  language: string
+  created_at_ms: number
+  updated_at_ms: number
+  transcript_version: number
 }
 
-function toState(row: SessionRow): SessionState {
+const SESSION_SELECT = `
+  SELECT s.id, s.language, s.created_at_ms, s.updated_at_ms,
+    COALESCE((SELECT MAX(sequence) FROM transcripts t WHERE t.session_id = s.id), 0) AS transcript_version
+  FROM sessions s
+`
+
+function toInfo(row: SessionRow): SessionInfo {
   return {
     id: row.id,
     language: row.language,
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
     transcriptVersion: row.transcript_version,
-    handoffVersion: row.handoff_version,
-    historyTranscriptVersionA: row.history_transcript_version_a,
-    historyTranscriptVersionB: row.history_transcript_version_b,
-    activeAgent: row.active_agent,
-    preparedQaForA: parsePreparedQa(row.prepared_qa_for_a),
-    preparedQaForB: parsePreparedQa(row.prepared_qa_for_b),
-    lastAgentRequestAtMs: row.last_agent_request_at_ms,
-    consecutiveEmptyQa: row.consecutive_empty_qa,
-    consecutiveFailures: row.consecutive_failures,
-    lastCompletedSlot: row.last_completed_slot,
   }
 }
 
 export class SessionRepository {
   constructor(private readonly database: DatabaseSync) {}
 
-  create(id: string, language: string, nowMs: number): SessionState {
+  create(id: string, language: string, nowMs: number): SessionInfo {
     this.database.prepare(`
-      INSERT INTO sessions (id, language, created_at_ms, updated_at_ms)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO sessions (id, language, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?)
     `).run(id, language, nowMs, nowMs)
     return this.get(id)
   }
 
-  get(id: string): SessionState {
-    const row = this.database.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined
+  get(id: string): SessionInfo {
+    const row = this.database.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id) as SessionRow | undefined
     if (row === undefined) {
       throw new Error(`Session not found: ${id}`)
     }
-    return toState(row)
+    return toInfo(row)
   }
 
-  list(): Array<{ id: string; language: string; createdAtMs: number; updatedAtMs: number; transcriptVersion: number; activeAgent: 'A' | 'B' | null }> {
-    return this.database.prepare(`
-      SELECT id, language, created_at_ms AS createdAtMs, updated_at_ms AS updatedAtMs,
-        transcript_version AS transcriptVersion, active_agent AS activeAgent
-      FROM sessions ORDER BY updated_at_ms DESC, created_at_ms DESC
-    `).all() as Array<{ id: string; language: string; createdAtMs: number; updatedAtMs: number; transcriptVersion: number; activeAgent: 'A' | 'B' | null }>
+  list(): SessionInfo[] {
+    const rows = this.database.prepare(`${SESSION_SELECT} ORDER BY s.updated_at_ms DESC, s.created_at_ms DESC`).all() as unknown as SessionRow[]
+    return rows.map(toInfo)
   }
 
-  appendTranscript(sessionId: string, transcript: TranscriptFinal, nowMs: number): SessionState {
-    this.database.prepare(`
-      INSERT INTO transcripts (session_id, sequence, started_at_ms, ended_at_ms, text, confidence)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      sessionId,
-      transcript.sequence,
-      transcript.startedAtMs,
-      transcript.endedAtMs,
-      transcript.text,
-      transcript.confidence,
-    )
-    this.database.prepare(`
-      UPDATE sessions SET transcript_version = ?, updated_at_ms = ? WHERE id = ?
-    `).run(transcript.sequence, nowMs, sessionId)
-    return this.get(sessionId)
+  /** The repository assigns the sequence, so a restarted voice session can never collide. */
+  appendTranscript(sessionId: string, input: Omit<TranscriptFinal, 'sequence'>, nowMs: number): TranscriptFinal {
+    const text = input.text.trim()
+    if (text === '') {
+      throw new Error('Transcript text must not be empty.')
+    }
+    this.get(sessionId)
+    return this.transaction(() => {
+      const row = this.database.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM transcripts WHERE session_id = ?')
+        .get(sessionId) as { next: number }
+      this.database.prepare(`
+        INSERT INTO transcripts (session_id, sequence, started_at_ms, ended_at_ms, text, confidence)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(sessionId, row.next, input.startedAtMs, input.endedAtMs, text, input.confidence)
+      this.database.prepare('UPDATE sessions SET updated_at_ms = ? WHERE id = ?').run(nowMs, sessionId)
+      return { sequence: row.next, startedAtMs: input.startedAtMs, endedAtMs: input.endedAtMs, text, confidence: input.confidence }
+    })
   }
 
-  listTranscriptsAfter(sessionId: string, version: number): TranscriptFinal[] {
+  transcripts(sessionId: string, afterSequence = 0): TranscriptFinal[] {
     const rows = this.database.prepare(`
       SELECT sequence, started_at_ms, ended_at_ms, text, confidence
       FROM transcripts WHERE session_id = ? AND sequence > ? ORDER BY sequence ASC
-    `).all(sessionId, version) as Array<{
+    `).all(sessionId, afterSequence) as unknown as Array<{
       sequence: number
       started_at_ms: number
       ended_at_ms: number
@@ -118,50 +155,38 @@ export class SessionRepository {
     }))
   }
 
-  listPeerQas(sessionId: string, slot: 'A' | 'B'): QaResult[] {
-    const peer = slot === 'A' ? 'B' : 'A'
+  /** Completed requests of one lane, oldest first. Only these are replayed to the model. */
+  laneTurns(sessionId: string, slot: AgentSlot): LaneTurn[] {
     const rows = this.database.prepare(`
-      SELECT qas.status, qas.question, qas.answer, qas.sources_json AS sourcesJson, qas.confidence
-      FROM qas JOIN agent_runs ON agent_runs.id = qas.run_id
-      WHERE agent_runs.session_id = ? AND agent_runs.slot = ? AND qas.status != 'ignore'
-      ORDER BY qas.rowid ASC
-    `).all(sessionId, peer) as Array<{ status: QaResult['status']; question: string | null; answer: string | null; sourcesJson: string; confidence: number }>
-    return rows.map((row) => ({ ...row, sources: JSON.parse(row.sourcesJson) } as QaResult))
+      SELECT input_text, output_text, end_version, peer_cursor FROM agent_runs
+      WHERE session_id = ? AND slot = ? AND status = 'completed' ORDER BY rowid ASC
+    `).all(sessionId, slot) as unknown as Array<{ input_text: string; output_text: string; end_version: number; peer_cursor: number }>
+    return rows.map((row) => ({
+      inputText: row.input_text,
+      outputText: row.output_text,
+      endVersion: row.end_version,
+      peerCursor: row.peer_cursor,
+    }))
   }
 
-  advanceAgentHistory(sessionId: string, slot: 'A' | 'B', version: number, nowMs: number): SessionState {
-    const column = slot === 'A' ? 'history_transcript_version_a' : 'history_transcript_version_b'
-    this.database.prepare(`UPDATE sessions SET ${column} = MAX(${column}, ?), updated_at_ms = ? WHERE id = ?`)
-      .run(version, nowMs, sessionId)
-    return this.get(sessionId)
+  startRun(input: StartRunInput): void {
+    this.database.prepare(`
+      INSERT INTO agent_runs (id, session_id, slot, status, start_version, end_version, input_text, peer_cursor, started_at_ms)
+      VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
+    `).run(input.runId, input.sessionId, input.slot, input.startVersion, input.endVersion, input.inputText, input.peerCursor, input.nowMs)
+    this.database.prepare('UPDATE sessions SET updated_at_ms = ? WHERE id = ?').run(input.nowMs, input.sessionId)
   }
 
-  /** Completed turns of one slot, in order, each with the exact input it was given. */
-  listSlotTurns(sessionId: string, slot: 'A' | 'B'): SlotTurn[] {
-    const runs = this.database.prepare(`
-      SELECT agent_runs.start_version AS startVersion, agent_runs.end_version AS endVersion,
-        agent_runs.peer_qa_count AS peerQaCount, qas.status, qas.question, qas.answer,
-        qas.sources_json AS sourcesJson, qas.confidence
-      FROM agent_runs JOIN qas ON qas.run_id = agent_runs.id
-      WHERE agent_runs.session_id = ? AND agent_runs.slot = ? AND agent_runs.status = 'completed'
-      ORDER BY agent_runs.started_at_ms ASC, agent_runs.rowid ASC
-    `).all(sessionId, slot) as Array<{
-      startVersion: number; endVersion: number; peerQaCount: number
-      status: QaResult['status']; question: string | null; answer: string | null; sourcesJson: string; confidence: number
-    }>
-    const transcripts = this.listTranscriptsAfter(sessionId, 0)
-    const peerQas = this.listPeerQas(sessionId, slot)
-    let deliveredPeerQas = 0
-    return runs.map((run) => {
-      const turn: SlotTurn = {
-        transcripts: transcripts.filter((item) => item.sequence > run.startVersion && item.sequence <= run.endVersion),
-        peerQas: peerQas.slice(deliveredPeerQas, run.peerQaCount),
-        result: { status: run.status, question: run.question, answer: run.answer, sources: JSON.parse(run.sourcesJson), confidence: run.confidence } as QaResult,
-        peerQaCount: run.peerQaCount,
-      }
-      deliveredPeerQas = run.peerQaCount
-      return turn
-    })
+  completeRun(runId: string, outputText: string, nowMs: number): void {
+    this.database.prepare(`
+      UPDATE agent_runs SET status = 'completed', output_text = ?, ended_at_ms = ? WHERE id = ?
+    `).run(outputText, nowMs, runId)
+  }
+
+  cancelRun(runId: string, message: string, outputText: string, nowMs: number): void {
+    this.database.prepare(`
+      UPDATE agent_runs SET status = 'cancelled', error_message = ?, output_text = ?, ended_at_ms = ? WHERE id = ?
+    `).run(message, outputText, nowMs, runId)
   }
 
   recordUsage(runId: string, usage: RunUsage): void {
@@ -170,105 +195,102 @@ export class SessionRepository {
     `).run(usage.inputTokens ?? null, usage.cachedInputTokens ?? null, usage.firstTokenMs ?? null, runId)
   }
 
-  timeline(sessionId: string): object {
+  /** Marks requests left running by a crashed process as cancelled. */
+  cancelInterruptedRuns(nowMs: number): number {
+    const result = this.database.prepare(`
+      UPDATE agent_runs SET status = 'cancelled', error_message = 'Interrupted by restart.', ended_at_ms = ?
+      WHERE status = 'running'
+    `).run(nowMs)
+    return Number(result.changes)
+  }
+
+  saveQa(input: SaveQaInput): number {
+    const result = this.database.prepare(`
+      INSERT INTO qas (session_id, run_id, slot, question, answer, status, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(input.sessionId, input.runId, input.slot, input.question, input.answer, input.status, input.nowMs)
+    return Number(result.lastInsertRowid)
+  }
+
+  recentShownQuestions(sessionId: string, sinceMs: number): string[] {
+    const rows = this.database.prepare(`
+      SELECT question FROM qas WHERE session_id = ? AND status = 'shown' AND created_at_ms >= ? ORDER BY id ASC
+    `).all(sessionId, sinceMs) as unknown as Array<{ question: string }>
+    return rows.map((row) => row.question)
+  }
+
+  /** Shown QAs written by the other lane after the given cursor. */
+  peerQasAfter(sessionId: string, slot: AgentSlot, cursor: number): StoredQa[] {
+    return this.queryQas(`
+      SELECT id, run_id, slot, question, answer, status, created_at_ms FROM qas
+      WHERE session_id = ? AND slot != ? AND status = 'shown' AND id > ? ORDER BY id ASC
+    `, sessionId, slot, cursor)
+  }
+
+  allQas(sessionId: string): StoredQa[] {
+    return this.queryQas(`
+      SELECT id, run_id, slot, question, answer, status, created_at_ms FROM qas WHERE session_id = ? ORDER BY id ASC
+    `, sessionId)
+  }
+
+  listRuns(sessionId: string): RunSummary[] {
+    const rows = this.database.prepare(`
+      SELECT id, slot, status, start_version, end_version, output_text, started_at_ms, ended_at_ms,
+        error_message, input_tokens, cached_input_tokens, first_token_ms
+      FROM agent_runs WHERE session_id = ? ORDER BY rowid ASC
+    `).all(sessionId) as unknown as Array<{
+      id: string; slot: AgentSlot; status: RunSummary['status']; start_version: number; end_version: number
+      output_text: string | null; started_at_ms: number; ended_at_ms: number | null; error_message: string | null
+      input_tokens: number | null; cached_input_tokens: number | null; first_token_ms: number | null
+    }>
+    return rows.map((row) => ({
+      id: row.id,
+      slot: row.slot,
+      status: row.status,
+      startVersion: row.start_version,
+      endVersion: row.end_version,
+      outputText: row.output_text,
+      startedAtMs: row.started_at_ms,
+      endedAtMs: row.ended_at_ms,
+      errorMessage: row.error_message,
+      inputTokens: row.input_tokens,
+      cachedInputTokens: row.cached_input_tokens,
+      firstTokenMs: row.first_token_ms,
+    }))
+  }
+
+  timeline(sessionId: string): { transcripts: TranscriptFinal[]; qas: StoredQa[]; runs: RunSummary[] } {
     this.get(sessionId)
-    const transcripts = this.database.prepare(`
-      SELECT sequence, started_at_ms AS startedAtMs, ended_at_ms AS endedAtMs, text, confidence
-      FROM transcripts WHERE session_id = ? ORDER BY sequence ASC
-    `).all(sessionId)
-    const qas = this.database.prepare(`
-      SELECT agent_runs.id AS runId, agent_runs.slot, agent_runs.status, agent_runs.started_at_ms AS startedAtMs,
-        agent_runs.ended_at_ms AS endedAtMs, qas.question, qas.answer, qas.confidence
-      FROM agent_runs LEFT JOIN qas ON qas.run_id = agent_runs.id
-      WHERE agent_runs.session_id = ? ORDER BY agent_runs.started_at_ms ASC
-    `).all(sessionId)
-    return { transcripts, qas }
+    return { transcripts: this.transcripts(sessionId), qas: this.allQas(sessionId), runs: this.listRuns(sessionId) }
   }
 
-  markRunStarted(sessionId: string, slot: 'A' | 'B', runId: string, endVersion: number, nowMs: number): SessionState {
-    const state = this.get(sessionId)
-    this.database.prepare(`
-      INSERT INTO agent_runs (id, session_id, slot, start_version, end_version, peer_qa_count, status, started_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
-    `).run(runId, sessionId, slot, historyTranscriptVersionFor(state, slot), endVersion, this.listPeerQas(sessionId, slot).length, nowMs)
-    this.database.prepare(`
-      UPDATE sessions SET active_agent = ?, last_agent_request_at_ms = ?, updated_at_ms = ? WHERE id = ?
-    `).run(slot, nowMs, nowMs, sessionId)
-    return this.get(sessionId)
+  private queryQas(sql: string, ...parameters: Array<string | number>): StoredQa[] {
+    const rows = this.database.prepare(sql).all(...parameters) as unknown as Array<{
+      id: number
+      run_id: string
+      slot: AgentSlot
+      question: string
+      answer: string
+      status: QaStatus
+      created_at_ms: number
+    }>
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      slot: row.slot,
+      question: row.question,
+      answer: row.answer,
+      status: row.status,
+      createdAtMs: row.created_at_ms,
+    }))
   }
 
-  completeRun(
-    sessionId: string,
-    slot: 'A' | 'B',
-    runId: string,
-    result: QaResult,
-    snapshotVersion: number,
-    nowMs: number,
-  ): SessionState {
-    const nextSlot = slot === 'A' ? 'B' : 'A'
-    const prepared = JSON.stringify({ runId, result })
+  private transaction<T>(work: () => T): T {
     this.database.exec('BEGIN IMMEDIATE')
     try {
-      this.database.prepare(`
-        UPDATE agent_runs SET status = 'completed', ended_at_ms = ? WHERE id = ?
-      `).run(nowMs, runId)
-      this.database.prepare(`
-        INSERT INTO qas (run_id, status, question, answer, sources_json, confidence)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(runId, result.status, result.question, result.answer, JSON.stringify(result.sources), result.confidence)
-      if (result.status !== 'ignore') {
-        const targetColumn = nextSlot === 'A' ? 'prepared_qa_for_a' : 'prepared_qa_for_b'
-        this.database.prepare(`
-        UPDATE sessions SET handoff_version = ?, ${targetColumn} = ?,
-          active_agent = NULL, consecutive_empty_qa = 0, consecutive_failures = 0, last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
-        `).run(snapshotVersion, prepared, slot, nowMs, sessionId)
-        this.database.prepare(`
-          INSERT INTO handoffs (session_id, from_slot, to_slot, run_id, raw_qa_json, handoff_version, created_at_ms)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(sessionId, slot, nextSlot, runId, JSON.stringify(result), snapshotVersion, nowMs)
-      } else {
-        this.database.prepare(`
-          UPDATE sessions SET active_agent = NULL, consecutive_empty_qa = consecutive_empty_qa + 1, consecutive_failures = 0,
-          last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
-        `).run(slot, nowMs, sessionId)
-      }
-      const state = this.get(sessionId)
+      const result = work()
       this.database.exec('COMMIT')
-      return state
-    } catch (error) {
-      this.database.exec('ROLLBACK')
-      throw error
-    }
-  }
-
-  failRun(sessionId: string, runId: string, message: string, nowMs: number): SessionState {
-    this.database.prepare(`
-      UPDATE agent_runs SET status = 'failed', ended_at_ms = ?, error_message = ? WHERE id = ?
-    `).run(nowMs, message, runId)
-    this.database.prepare(`
-      UPDATE sessions SET active_agent = NULL, updated_at_ms = ? WHERE id = ?
-    `).run(nowMs, sessionId)
-    return this.get(sessionId)
-  }
-
-  skipRun(
-    sessionId: string,
-    slot: 'A' | 'B',
-    runId: string,
-    nowMs: number,
-    message = 'Timed out; skipped.',
-  ): SessionState {
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
-      this.database.prepare(`UPDATE agent_runs SET status = 'cancelled', ended_at_ms = ?, error_message = ? WHERE id = ?`)
-        .run(nowMs, message, runId)
-      this.database.prepare(`
-        UPDATE sessions SET active_agent = NULL, consecutive_failures = consecutive_failures + 1,
-          last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
-      `).run(slot, nowMs, sessionId)
-      const state = this.get(sessionId)
-      this.database.exec('COMMIT')
-      return state
+      return result
     } catch (error) {
       this.database.exec('ROLLBACK')
       throw error

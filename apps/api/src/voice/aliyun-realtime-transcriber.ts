@@ -1,9 +1,14 @@
 import { EventEmitter } from 'node:events'
 import type { VoiceProvider, VoiceSessionConfig } from './voice-provider.js'
 
-const RECONNECT_ATTEMPTS = 3
-const RECONNECT_BASE_DELAY_MS = 500
-const FINALIZE_WAIT_MS = 3_000
+
+export interface AliyunTimings {
+  readonly reconnectAttempts: number
+  readonly reconnectBaseDelayMs: number
+  readonly finalizeWaitMs: number
+}
+
+const DEFAULT_TIMINGS: AliyunTimings = { reconnectAttempts: 3, reconnectBaseDelayMs: 500, finalizeWaitMs: 3_000 }
 
 export interface AliyunCredentials {
   readonly appKey: string
@@ -26,7 +31,10 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
   #closing = false
   #droppedAudioChunks = 0
 
-  constructor(private readonly credentials: AliyunCredentials) {}
+  constructor(
+    private readonly credentials: AliyunCredentials,
+    private readonly timings: AliyunTimings = DEFAULT_TIMINGS,
+  ) {}
 
   async open(config: VoiceSessionConfig): Promise<void> {
     if (this.#socket !== null) {
@@ -54,9 +62,10 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
   async finalize(): Promise<void> {
     this.#closing = true
     if (this.#socket?.readyState !== WebSocket.OPEN) return
+    let waitTimer: NodeJS.Timeout | undefined
     const completed = new Promise<void>((resolve) => {
       this.#resolveCompleted = resolve
-      setTimeout(resolve, FINALIZE_WAIT_MS)
+      waitTimer = setTimeout(resolve, this.timings.finalizeWaitMs)
     })
     this.#socket.send(JSON.stringify({
       header: {
@@ -68,6 +77,7 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
       },
     }))
     await completed
+    clearTimeout(waitTimer)
     this.#resolveCompleted = null
   }
 
@@ -127,8 +137,8 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
         this.#rejectStarted = null
       }
     } catch (error) {
-      socket.close()
       if (this.#socket === socket) this.#socket = null
+      socket.close()
       throw error
     }
   }
@@ -141,8 +151,8 @@ export class AliyunRealtimeTranscriber implements VoiceProvider {
 
   /** Transient drops are retried silently; only a final failure is reported. */
   private async reconnect(): Promise<void> {
-    for (let attempt = 1; attempt <= RECONNECT_ATTEMPTS; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1)))
+    for (let attempt = 1; attempt <= this.timings.reconnectAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, this.timings.reconnectBaseDelayMs * 2 ** (attempt - 1)))
       if (this.#closing) return
       try {
         await this.connect()

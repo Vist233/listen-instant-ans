@@ -1,151 +1,197 @@
 import { randomUUID } from 'node:crypto'
-import { qaResultSchema, type AgentSlot, type QaResult, type TranscriptFinal } from '@listen-instant-ans/contracts'
-import { EventHub } from '../events/event-hub.js'
+import type { AgentSlot, TranscriptFinal } from '@listen-instant-ans/contracts'
+import { buildLaneMessages, buildUserMessage } from '../agent/qa-prompt.js'
+import { QaLineParser, type ParserEvent } from '../agent/qa-line-parser.js'
 import type { QaRunner } from '../agent/qa-runner.js'
-import { historyTranscriptVersionFor } from './session-state.js'
-import { decideNextTurn } from './turn-scheduler.js'
-import { SessionRepository } from '../storage/session-repository.js'
+import { runTurn } from '../agent/run-turn.js'
+import { tuning, type Tuning } from '../config/tuning.js'
+import { EventHub } from '../events/event-hub.js'
+import { SessionRepository, type SessionInfo } from '../storage/session-repository.js'
+import { isDuplicateQuestion } from './dedupe.js'
+import { startLaneClock } from './lane-clock.js'
 
-interface ActiveRun {
-  readonly runId: string
-  readonly slot: AgentSlot
-  readonly snapshotVersion: number
-  readonly controller: AbortController
+export interface ControllerOptions {
+  readonly now?: () => number
+  readonly tuning?: Partial<Tuning>
+  /** Set to false in tests that drive `tick` by hand. */
+  readonly autoStartLanes?: boolean
 }
 
-export const DEFAULT_AGENT_RUN_TIMEOUT_MS = 30_000
+interface LaneRun {
+  readonly runId: string
+  readonly controller: AbortController
+  readonly parser: QaLineParser
+  /** True while the pair being written repeats a question that is already shown. */
+  suppressed: boolean
+}
 
+const laneKey = (sessionId: string, slot: AgentSlot): string => `${sessionId}:${slot}`
+const otherSlot = (slot: AgentSlot): AgentSlot => (slot === 'A' ? 'B' : 'A')
+
+/**
+ * Glues the pieces together. It owns the two lane timers of each session and,
+ * on every tick, runs at most one request per lane.
+ */
 export class SessionController {
-  readonly #activeRuns = new Map<string, ActiveRun>()
-  readonly #lastSlot = new Map<string, AgentSlot>()
-  readonly #scheduled = new Map<string, NodeJS.Timeout>()
+  readonly #running = new Map<string, LaneRun>()
+  readonly #clocks = new Map<string, () => void>()
+  readonly #now: () => number
+  readonly #tuning: Tuning
+  readonly #autoStartLanes: boolean
 
   constructor(
     private readonly sessions: SessionRepository,
     private readonly runner: QaRunner,
     private readonly events: EventHub,
-    private readonly now: () => number = Date.now,
-    private readonly runTimeoutMs: number = DEFAULT_AGENT_RUN_TIMEOUT_MS,
-  ) {}
-
-  start(sessionId: string, language: string): void {
-    this.sessions.create(sessionId, language, this.now())
+    options: ControllerOptions = {},
+  ) {
+    this.#now = options.now ?? Date.now
+    this.#tuning = { ...tuning, ...options.tuning }
+    this.#autoStartLanes = options.autoStartLanes ?? true
   }
 
-  appendFinalTranscript(sessionId: string, transcript: TranscriptFinal): void {
-    this.sessions.appendTranscript(sessionId, transcript, this.now())
+  start(sessionId: string, language: string): SessionInfo {
+    return this.sessions.create(sessionId, language, this.#now())
+  }
+
+  appendFinalTranscript(sessionId: string, final: Omit<TranscriptFinal, 'sequence'>): TranscriptFinal {
+    const transcript = this.sessions.appendTranscript(sessionId, final, this.#now())
     this.events.publish({ type: 'transcript.final', sessionId, transcript })
-    void this.schedule(sessionId)
+    if (this.#autoStartLanes) this.ensureLanes(sessionId)
+    return transcript
   }
 
   publishPartialTranscript(sessionId: string, text: string): void {
     this.events.publish({ type: 'transcript.partial', sessionId, text })
   }
 
-  cancelActiveRun(sessionId: string): void {
-    this.#activeRuns.get(sessionId)?.controller.abort()
+  activeSlots(sessionId: string): AgentSlot[] {
+    return (['A', 'B'] as const).filter((slot) => this.#running.has(laneKey(sessionId, slot)))
   }
 
+  ensureLanes(sessionId: string): void {
+    if (this.#clocks.has(sessionId)) return
+    this.#clocks.set(sessionId, startLaneClock({
+      periodMs: this.#tuning.lanePeriodMs,
+      staggerMs: this.#tuning.laneStaggerMs,
+      onTick: (slot) => void this.tick(sessionId, slot),
+    }))
+  }
+
+  cancelActiveRuns(sessionId: string): void {
+    for (const slot of ['A', 'B'] as const) {
+      this.#running.get(laneKey(sessionId, slot))?.controller.abort()
+    }
+  }
+
+  /** Stops the lane timers and cancels what is in flight. Transcripts stay. */
   stop(sessionId: string): void {
-    this.cancelActiveRun(sessionId)
-    const timer = this.#scheduled.get(sessionId)
-    if (timer !== undefined) {
-      clearTimeout(timer)
-      this.#scheduled.delete(sessionId)
+    this.#clocks.get(sessionId)?.()
+    this.#clocks.delete(sessionId)
+    this.cancelActiveRuns(sessionId)
+  }
+
+  /**
+   * One beat of one lane. Skips when the lane is still busy or has heard
+   * nothing new. Resolves when the request it started has finished.
+   */
+  async tick(sessionId: string, slot: AgentSlot): Promise<void> {
+    const key = laneKey(sessionId, slot)
+    if (this.#running.has(key)) return
+    try {
+      await this.runLane(sessionId, slot, key)
+    } catch (error) {
+      console.error(`Lane ${slot} failed for session ${sessionId}:`, error)
     }
   }
 
-  async schedule(sessionId: string): Promise<void> {
-    if (this.#activeRuns.has(sessionId) || this.#scheduled.has(sessionId)) {
-      return
-    }
-    const state = this.sessions.get(sessionId)
-    const decision = decideNextTurn(
-      state,
-      this.#lastSlot.get(sessionId) ?? state.lastCompletedSlot,
-      this.now(),
-    )
-    if (decision === null) {
-      return
-    }
-    if (decision.delayMs > 0) {
-      const timer = setTimeout(() => {
-        this.#scheduled.delete(sessionId)
-        void this.schedule(sessionId)
-      }, decision.delayMs)
-      this.#scheduled.set(sessionId, timer)
-      return
-    }
-    await this.startTurn(sessionId, decision.slot)
-  }
+  private async runLane(sessionId: string, slot: AgentSlot, key: string): Promise<void> {
+    const turns = this.sessions.laneTurns(sessionId, slot)
+    const seenVersion = turns.at(-1)?.endVersion ?? 0
+    const transcripts = this.sessions.transcripts(sessionId, seenVersion)
+    if (transcripts.length === 0) return
 
-  private async startTurn(sessionId: string, slot: AgentSlot): Promise<void> {
-    const state = this.sessions.get(sessionId)
-    const snapshotVersion = state.transcriptVersion
-    const historyVersion = historyTranscriptVersionFor(state, slot)
-    const transcripts = this.sessions.listTranscriptsAfter(sessionId, historyVersion)
-    const past = this.sessions.listSlotTurns(sessionId, slot)
-    const peerQas = this.sessions.listPeerQas(sessionId, slot).slice(past.at(-1)?.peerQaCount ?? 0)
-    if (transcripts.length === 0) {
-      return
-    }
+    const peerCursor = turns.at(-1)?.peerCursor ?? 0
+    const peerQas = this.sessions.peerQasAfter(sessionId, slot, peerCursor)
+    const peerInflight = this.#running.get(laneKey(sessionId, otherSlot(slot)))?.parser.pending() ?? null
+    const inputText = buildUserMessage({ transcripts, peerQas, peerInflight })
     const runId = randomUUID()
-    const controller = new AbortController()
-    const active: ActiveRun = { runId, slot, snapshotVersion, controller }
-    this.#activeRuns.set(sessionId, active)
-    this.sessions.markRunStarted(sessionId, slot, runId, snapshotVersion, this.now())
-    this.events.publish({ type: 'agent.started', sessionId, runId, slot })
-    let merged: Partial<QaResult> = {}
-    let timedOut = false
-    const run = (async (): Promise<QaResult> => {
-      for await (const partial of this.runner.run({
+    const lane: LaneRun = { runId, controller: new AbortController(), parser: new QaLineParser(), suppressed: false }
+
+    // Everything up to the first await is synchronous, so two ticks can never both start this lane.
+    this.#running.set(key, lane)
+    try {
+      this.sessions.startRun({
         sessionId,
         slot,
         runId,
-        past,
-        transcripts,
-        peerQas,
+        startVersion: seenVersion,
+        endVersion: transcripts[transcripts.length - 1].sequence,
+        inputText,
+        peerCursor: peerQas.at(-1)?.id ?? peerCursor,
+        nowMs: this.#now(),
+      })
+      this.events.publish({ type: 'agent.started', sessionId, runId, slot })
+      const outcome = await runTurn(this.runner, {
+        sessionId,
+        slot,
+        runId,
+        messages: buildLaneMessages(turns, inputText),
         onUsage: (usage) => this.sessions.recordUsage(runId, usage),
-      }, controller.signal)) {
-        merged = { ...merged, ...partial }
-        if (!timedOut) this.events.publish({ type: 'qa.partial', sessionId, runId, slot, partial })
-      }
-      if (merged.status === 'ignore') {
-        merged.question = null
-        merged.answer = null
-        merged.sources = []
-      }
-      return qaResultSchema.parse(merged)
-    })()
-    let timeoutHandle: NodeJS.Timeout | undefined
-    const timeout = new Promise<'timeout'>((resolve) => {
-      timeoutHandle = setTimeout(() => resolve('timeout'), this.runTimeoutMs)
-    })
-    try {
-      const outcome = await Promise.race([run, timeout])
-      if (outcome === 'timeout') {
-        timedOut = true
-        controller.abort()
-        void run.catch(() => undefined)
-        this.sessions.skipRun(sessionId, slot, runId, this.now())
-        this.#lastSlot.set(sessionId, slot)
-        this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: `Agent timed out after ${Math.round(this.runTimeoutMs / 1000)} seconds and was skipped.` })
+      }, {
+        controller: lane.controller,
+        timeoutMs: this.#tuning.runTimeoutMs,
+        onDelta: (delta) => this.handleParserEvents(sessionId, slot, lane, lane.parser.push(delta)),
+      })
+      if (outcome.kind === 'completed') {
+        this.handleParserEvents(sessionId, slot, lane, lane.parser.end())
+        // An empty reply is stored as "-" so the replayed assistant message is never empty.
+        this.sessions.completeRun(runId, outcome.text.trim() === '' ? '-' : outcome.text, this.#now())
+        this.events.publish({ type: 'agent.finished', sessionId, runId, slot })
         return
       }
-      const result = outcome
-      this.sessions.completeRun(sessionId, slot, runId, result, snapshotVersion, this.now())
-      this.sessions.advanceAgentHistory(sessionId, slot, snapshotVersion, this.now())
-      this.#lastSlot.set(sessionId, slot)
-      this.events.publish({ type: 'qa.completed', sessionId, runId, slot, result })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.sessions.skipRun(sessionId, slot, runId, this.now(), `Unusable structured QA: ${message}`)
-      this.#lastSlot.set(sessionId, slot)
-      this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: `Skipped unusable structured QA: ${message}` })
+      const message = outcome.kind === 'timeout'
+        ? `Timed out after ${Math.round(this.#tuning.runTimeoutMs / 1000)} seconds.`
+        : lane.controller.signal.aborted ? 'Cancelled.' : outcome.message
+      this.sessions.cancelRun(runId, message, outcome.text, this.#now())
+      this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message })
     } finally {
-      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
-      this.#activeRuns.delete(sessionId)
-      await this.schedule(sessionId)
+      this.#running.delete(key)
     }
+  }
+
+  private handleParserEvents(sessionId: string, slot: AgentSlot, lane: LaneRun, parserEvents: ParserEvent[]): void {
+    for (const event of parserEvents) {
+      if (event.type === 'question') {
+        lane.suppressed = this.isDuplicate(sessionId, event.question)
+      } else if (event.type === 'partial') {
+        if (!lane.suppressed) {
+          this.events.publish({ type: 'qa.partial', sessionId, runId: lane.runId, slot, question: event.question, answer: event.answer })
+        }
+      } else {
+        const answer = event.answer.length > this.#tuning.answerHardLimit
+          ? `${event.answer.slice(0, this.#tuning.answerHardLimit)}…`
+          : event.answer
+        const duplicate = lane.suppressed || this.isDuplicate(sessionId, event.question)
+        lane.suppressed = false
+        const qaId = this.sessions.saveQa({
+          sessionId,
+          runId: lane.runId,
+          slot,
+          question: event.question,
+          answer,
+          status: duplicate ? 'duplicate' : 'shown',
+          nowMs: this.#now(),
+        })
+        if (!duplicate) {
+          this.events.publish({ type: 'qa.completed', sessionId, runId: lane.runId, slot, qaId, question: event.question, answer })
+        }
+      }
+    }
+  }
+
+  private isDuplicate(sessionId: string, question: string): boolean {
+    const recent = this.sessions.recentShownQuestions(sessionId, this.#now() - this.#tuning.dedupeWindowMs)
+    return isDuplicateQuestion(question, recent, this.#tuning.dedupeThreshold)
   }
 }

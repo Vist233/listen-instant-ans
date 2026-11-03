@@ -1,11 +1,5 @@
-import type { AgentSlot, QaResult, TranscriptFinal } from '@listen-instant-ans/contracts'
-
-/** One finished turn of this slot: what it was given and what it answered. */
-export interface QaPastTurn {
-  readonly transcripts: readonly TranscriptFinal[]
-  readonly peerQas: readonly QaResult[]
-  readonly result: QaResult
-}
+import type { AgentSlot } from '@listen-instant-ans/contracts'
+import type { QaChatMessage } from './qa-prompt.js'
 
 export interface QaUsage {
   readonly inputTokens?: number
@@ -17,21 +11,17 @@ export interface QaRunInput {
   readonly sessionId: string
   readonly slot: AgentSlot
   readonly runId: string
-  /** Earlier turns of this slot, replayed byte-for-byte so the model prefix stays stable. */
-  readonly past: readonly QaPastTurn[]
-  /** Final speech this slot has not seen yet. */
-  readonly transcripts: readonly TranscriptFinal[]
-  /** Peer QAs this slot has not seen yet. */
-  readonly peerQas: readonly QaResult[]
+  readonly messages: readonly QaChatMessage[]
   readonly onUsage?: (usage: QaUsage) => void
 }
 
+/** Streams the model's answer as text deltas. */
 export interface QaRunner {
-  run(input: QaRunInput, signal: AbortSignal): AsyncIterable<Partial<QaResult>>
+  run(input: QaRunInput, signal: AbortSignal): AsyncIterable<string>
 }
 
 export class UnconfiguredQaRunner implements QaRunner {
-  async *run(): AsyncIterable<Partial<QaResult>> {
+  async *run(): AsyncIterable<string> {
     throw new Error('MIMO_API_KEY is not configured, so the QA agents cannot run.')
   }
 }
