@@ -42,14 +42,8 @@ function appendQa(result, slot, runId) {
   if (runId !== undefined && qaRunIds.has(runId)) return
   if (runId !== undefined) qaRunIds.add(runId)
   const row = document.createElement('li')
-  const questionLabel = document.createElement('strong')
-  questionLabel.textContent = `${slot} · Q`
-  const question = document.createTextNode(` ${result.question}`)
-  const answer = document.createElement('div')
-  answer.className = 'qa-answer'
-  answer.textContent = `A · ${result.answer}`
-  row.append(questionLabel, question, answer)
-  qas.append(row)
+  row.textContent = result.question
+  qas.prepend(row)
 }
 function renderQaPartial(partialResult, slot) {
   const lines = [`Agent ${slot} is drafting…`]
@@ -70,7 +64,7 @@ async function loadTimeline() {
   transcriptSequences.clear()
   qaRunIds.clear()
   data.transcripts.forEach(appendTranscript)
-  data.qas.filter((item) => item.question && item.answer).forEach((item) => appendQa(item, item.slot, item.runId))
+  data.qas.filter((item) => item.question && item.answer).reverse().forEach((item) => appendQa(item, item.slot, item.runId))
 }
 function connectEvents() {
   events?.close()
@@ -81,8 +75,8 @@ function connectEvents() {
     if (event.type === 'listening.stopped') setStatus('Stopped')
     if (event.type === 'transcript.partial') partial.textContent = event.text
     if (event.type === 'transcript.final') { partial.textContent = 'Waiting for speech…'; appendTranscript(event.transcript) }
-    if (event.type === 'agent.started') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} is answering…`) }
-    if (event.type === 'qa.partial') renderQaPartial(event.partial, event.slot)
+    if (event.type === 'agent.started') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} 处理中…`) }
+    if (event.type === 'qa.partial') qaPartial.textContent = ''
     if (event.type === 'qa.completed') {
       qaPartial.textContent = ''
       if (event.result.status !== 'ignore' && event.result.question && event.result.answer) appendQa(event.result, event.slot, event.runId)
