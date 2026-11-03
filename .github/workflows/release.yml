@@ -1,0 +1,79 @@
+name: Release
+
+# Builds the macOS .dmg files and the browser version.
+#  - Push a tag such as v0.1.0 to publish them as a GitHub release.
+#  - Or run it by hand (Actions tab -> Release -> Run workflow) to only get the files as artifacts.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    name: DMG (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build the app and the disk image
+        run: node scripts/build-desktop.mjs --arch=${{ matrix.arch }}
+      - name: Self-check the built app
+        # The runner is arm64, so only that build can be started here.
+        if: matrix.arch == 'arm64'
+        run: |
+          HOME_DIR="$(mktemp -d)"
+          env -i PATH="$PATH" HOME="$HOME_DIR" LISTEN_INSTANT_ANS_SETTINGS="$HOME_DIR/settings.json" LISTEN_INSTANT_ANS_DATABASE=":memory:" PORT=0 \
+            "dist/desktop/mac-arm64/Listen Instant Ans.app/Contents/MacOS/Listen Instant Ans" --smoke-test | tee smoke.txt
+          grep -q SMOKE_OK smoke.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: dist/desktop/*.dmg
+          if-no-files-found: error
+
+  web:
+    name: Browser version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/build-web.mjs
+      - name: Pack it
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          mkdir -p out && (cd dist && zip -qr "../out/listen-instant-ans-web-${VERSION}.zip" web)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: out/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [dmg, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" files/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes
