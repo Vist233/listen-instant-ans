@@ -205,4 +205,23 @@ export class SessionRepository {
     `).run(nowMs, sessionId)
     return this.get(sessionId)
   }
+
+  skipRun(sessionId: string, slot: 'A' | 'B', runId: string, snapshotVersion: number, nowMs: number): SessionState {
+    const historyColumn = slot === 'A' ? 'history_transcript_version_a' : 'history_transcript_version_b'
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.prepare(`UPDATE agent_runs SET status = 'cancelled', ended_at_ms = ?, error_message = ? WHERE id = ?`)
+        .run(nowMs, 'Timed out after 15 seconds; skipped.', runId)
+      this.database.prepare(`
+        UPDATE sessions SET ${historyColumn} = MAX(${historyColumn}, ?), active_agent = NULL,
+          last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
+      `).run(snapshotVersion, slot, nowMs, sessionId)
+      const state = this.get(sessionId)
+      this.database.exec('COMMIT')
+      return state
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
 }

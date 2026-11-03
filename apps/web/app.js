@@ -83,7 +83,11 @@ function connectEvents() {
     if (event.type === 'transcript.final') { partial.textContent = 'Waiting for speech…'; appendTranscript(event.transcript) }
     if (event.type === 'agent.started') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} is answering…`) }
     if (event.type === 'qa.partial') renderQaPartial(event.partial, event.slot)
-    if (event.type === 'qa.completed') { qaPartial.textContent = ''; appendQa(event.result, event.slot, event.runId); setStatus(`Agent ${event.slot} completed`); }
+    if (event.type === 'qa.completed') {
+      qaPartial.textContent = ''
+      if (event.result.status !== 'ignore' && event.result.question && event.result.answer) appendQa(event.result, event.slot, event.runId)
+      setStatus(`Agent ${event.slot} completed`)
+    }
     if (event.type === 'agent.failed') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} failed: ${event.message}`) }
   }
   events.onerror = () => setStatus('Live connection interrupted; reconnecting…')

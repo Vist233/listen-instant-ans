@@ -13,6 +13,8 @@ interface ActiveRun {
   readonly controller: AbortController
 }
 
+const AGENT_RUN_TIMEOUT_MS = 15_000
+
 export class SessionController {
   readonly #activeRuns = new Map<string, ActiveRun>()
   readonly #lastSlot = new Map<string, AgentSlot>()
@@ -91,7 +93,8 @@ export class SessionController {
     this.sessions.markRunStarted(sessionId, slot, runId, snapshotVersion, this.now())
     this.events.publish({ type: 'agent.started', sessionId, runId, slot })
     let merged: Partial<QaResult> = {}
-    try {
+    let timedOut = false
+    const run = (async (): Promise<QaResult> => {
       for await (const partial of this.runner.run({
         sessionId,
         slot,
@@ -101,16 +104,31 @@ export class SessionController {
         peerQas: this.sessions.listPeerQas(sessionId, slot),
       }, controller.signal)) {
         merged = { ...merged, ...partial }
-        this.events.publish({ type: 'qa.partial', sessionId, runId, slot, partial })
+        if (!timedOut) this.events.publish({ type: 'qa.partial', sessionId, runId, slot, partial })
       }
-      // Some structured-output providers serialize ignore as empty strings.
-      // Normalize that transport detail before applying the strict domain schema.
       if (merged.status === 'ignore') {
         merged.question = null
         merged.answer = null
         merged.sources = []
       }
-      const result = qaResultSchema.parse(merged)
+      return qaResultSchema.parse(merged)
+    })()
+    let timeoutHandle: NodeJS.Timeout | undefined
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve('timeout'), AGENT_RUN_TIMEOUT_MS)
+    })
+    try {
+      const outcome = await Promise.race([run, timeout])
+      if (outcome === 'timeout') {
+        timedOut = true
+        controller.abort()
+        void run.catch(() => undefined)
+        this.sessions.skipRun(sessionId, slot, runId, snapshotVersion, this.now())
+        this.#lastSlot.set(sessionId, slot)
+        this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: 'Agent timed out after 15 seconds and was skipped.' })
+        return
+      }
+      const result = outcome
       this.sessions.completeRun(sessionId, slot, runId, result, snapshotVersion, this.now())
       this.sessions.advanceAgentHistory(sessionId, slot, snapshotVersion, this.now())
       this.#lastSlot.set(sessionId, slot)
@@ -120,6 +138,7 @@ export class SessionController {
       this.sessions.failRun(sessionId, runId, message, this.now())
       this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message })
     } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
       this.#activeRuns.delete(sessionId)
       await this.schedule(sessionId)
     }
