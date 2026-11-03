@@ -19,6 +19,7 @@
     "node": ">=24"
   },
   "description": "听老师讲课，几秒内给出问题的要点答案。浏览器版和 macOS 桌面版。",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Vist233/listen-instant-ans.git"
