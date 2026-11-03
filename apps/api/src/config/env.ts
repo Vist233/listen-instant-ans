@@ -5,7 +5,7 @@ export interface AppConfig {
     readonly token?: string
     readonly endpoint: string
   }
-  readonly opencode: {
+  readonly mimo: {
     readonly baseUrl?: string
     readonly apiKey?: string
     readonly model: string
@@ -20,11 +20,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       token: environment.ALIYUN_NLS_TOKEN ?? environment.ALIYUN_TMP_TOKEN,
       endpoint: environment.ALIYUN_NLS_ENDPOINT ?? 'wss://nls-gateway.aliyuncs.com/ws/v1',
     },
-    opencode: {
-      baseUrl: environment.OPENCODE_BASE_URL
-        ?? 'https://opencode.ai/inference/go/openai/v1',
-      apiKey: environment.OPENCODE_API_KEY,
-      model: environment.OPENCODE_MODEL ?? 'mimo-v2.6-flash',
+    mimo: {
+      baseUrl: environment.MIMO_BASE_URL ?? 'https://api.xiaomimimo.com/v1',
+      apiKey: environment.MIMO_API_KEY,
+      model: environment.MIMO_MODEL ?? 'mimo-v2.6-flash',
     },
   }
 }

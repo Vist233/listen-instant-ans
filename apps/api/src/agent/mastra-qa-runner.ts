@@ -3,7 +3,7 @@ import type { QaResult } from '@listen-instant-ans/contracts'
 import { buildQaPrompt, qaSystemInstructions } from './qa-prompt.js'
 import type { QaRunInput, QaRunner } from './qa-runner.js'
 import type { AppConfig } from '../config/env.js'
-import { createOpenCodeQaAgents } from './opencode-mastra-agents.js'
+import { createMiMoQaAgents } from './mimo-mastra-agents.js'
 
 type QaAgent = Pick<Agent, 'stream'>
 
@@ -15,12 +15,12 @@ type QaAgent = Pick<Agent, 'stream'>
 export class MastraQaRunner implements QaRunner {
   readonly #agents = new Map<string, Readonly<Record<'A' | 'B', QaAgent>>>()
 
-  constructor(private readonly config: AppConfig['opencode']) {}
+  constructor(private readonly config: AppConfig['mimo']) {}
 
   private agentsFor(sessionId: string): Readonly<Record<'A' | 'B', QaAgent>> {
     let agents = this.#agents.get(sessionId)
     if (agents === undefined) {
-      agents = createOpenCodeQaAgents(this.config, sessionId)
+      agents = createMiMoQaAgents(this.config, sessionId)
       this.#agents.set(sessionId, agents)
     }
     return agents
