@@ -14,9 +14,16 @@ let events = null
 const transcriptSequences = new Set()
 const qaRunIds = new Set()
 const sessionStorageKey = 'listenInstantAns.sessionId'
+const ANSWER_MAX_LENGTH = 200
 
 function setStatus(message) { status.textContent = message }
 function sessionLabel(session) { return new Date(session.createdAtMs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
+function hasQuestion(item) { return typeof item.question === 'string' && item.question.trim() !== '' }
+function conciseAnswer(answer) {
+  if (typeof answer !== 'string') return '（未生成答案）'
+  const text = answer.trim()
+  return text.length <= ANSWER_MAX_LENGTH ? text : `${text.slice(0, ANSWER_MAX_LENGTH)}…`
+}
 async function loadSessions() {
   const items = await request('/sessions')
   sessionList.replaceChildren()
@@ -27,7 +34,9 @@ async function loadSessions() {
     const detail = document.createElement('small')
     detail.textContent = item.listening ? '正在录音' : item.activeAgent ? `Agent ${item.activeAgent} 回答中` : '已结束'
     button.append(detail)
-    button.onclick = () => activateSession(item.id)
+    button.onclick = () => {
+      void activateSession(item.id).catch((error) => setStatus(error.message))
+    }
     sessionList.append(button)
   }
 }
@@ -42,7 +51,13 @@ function appendQa(result, slot, runId) {
   if (runId !== undefined && qaRunIds.has(runId)) return
   if (runId !== undefined) qaRunIds.add(runId)
   const row = document.createElement('li')
-  row.textContent = result.question
+  const question = document.createElement('p')
+  question.className = 'qa-question'
+  question.textContent = `问题：${result.question}`
+  const answer = document.createElement('p')
+  answer.className = 'qa-answer'
+  answer.textContent = `答案：${conciseAnswer(result.answer)}`
+  row.append(question, answer)
   qas.prepend(row)
 }
 function renderQaPartial(partialResult, slot) {
@@ -64,7 +79,7 @@ async function loadTimeline() {
   transcriptSequences.clear()
   qaRunIds.clear()
   data.transcripts.forEach(appendTranscript)
-  data.qas.filter((item) => item.question && item.answer).reverse().forEach((item) => appendQa(item, item.slot, item.runId))
+  data.qas.filter(hasQuestion).forEach((item) => appendQa(item, item.slot, item.runId))
 }
 function connectEvents() {
   events?.close()
@@ -79,7 +94,7 @@ function connectEvents() {
     if (event.type === 'qa.partial') qaPartial.textContent = ''
     if (event.type === 'qa.completed') {
       qaPartial.textContent = ''
-      if (event.result.status !== 'ignore' && event.result.question && event.result.answer) appendQa(event.result, event.slot, event.runId)
+      if (hasQuestion(event.result)) appendQa(event.result, event.slot, event.runId)
       setStatus(`Agent ${event.slot} completed`)
     }
     if (event.type === 'agent.failed') { qaPartial.textContent = ''; setStatus(`Agent ${event.slot} failed: ${event.message}`) }
@@ -88,6 +103,7 @@ function connectEvents() {
 }
 async function activateSession(id) {
   sessionId = id
+  sessionStorage.setItem(sessionStorageKey, sessionId)
   const state = await request(`/sessions/${sessionId}`)
   sessionTitle.textContent = `会话 ${sessionId.slice(0, 8)}`
   await loadTimeline()
@@ -132,4 +148,11 @@ if (savedSessionId !== null) {
     sessionStorage.removeItem(sessionStorageKey)
     setStatus('Create a session to begin.')
   })
-} else loadSessions().catch((error) => setStatus(error.message))
+} else {
+  loadSessions()
+    .then(async () => {
+      const items = await request('/sessions')
+      if (items.length > 0) await activateSession(items[0].id)
+    })
+    .catch((error) => setStatus(error.message))
+}

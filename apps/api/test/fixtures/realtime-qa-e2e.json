@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "language": "zh-CN",
+  "cases": [
+    {
+      "id": "single-question",
+      "transcripts": ["老师问：量子计算为什么威胁 RSA 加密？"],
+      "expects": ["one persisted QA", "question and answer are non-empty"]
+    },
+    {
+      "id": "two-questions",
+      "transcripts": ["老师问：量子计算为什么威胁 RSA 加密？", "老师继续问：AES 为什么仍需要更长的密钥？"],
+      "expects": ["A and B both receive final transcripts", "QA history is retained", "latest QA renders first"]
+    },
+    {
+      "id": "timeout-retention",
+      "transcripts": ["超时后仍必须保留的最终语音。"],
+      "expects": ["cancelled run does not advance that agent history", "next run receives the same speech"]
+    },
+    {
+      "id": "answer-display-limit",
+      "transcripts": ["生成超过两百字的解释。"],
+      "expects": ["web renders question followed by answer", "web limits answer body to 200 characters"]
+    }
+  ]
+}

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
 import type { QaResult } from '@listen-instant-ans/contracts'
 import { EventHub } from '../src/events/event-hub.js'
@@ -35,6 +37,14 @@ class CapturingRunner implements QaRunner {
 function createRepository(): SessionRepository {
   return new SessionRepository(openDatabase(':memory:'))
 }
+
+test('realtime QA E2E dataset has the required reproducible cases', () => {
+  const path = join(import.meta.dirname, 'fixtures', 'realtime-qa-e2e.json')
+  const dataset = JSON.parse(readFileSync(path, 'utf8')) as { version: number; cases: Array<{ id: string; transcripts: string[]; expects: string[] }> }
+  assert.equal(dataset.version, 1)
+  assert.deepEqual(dataset.cases.map((item) => item.id), ['single-question', 'two-questions', 'timeout-retention', 'answer-display-limit'])
+  assert.ok(dataset.cases.every((item) => item.transcripts.length > 0 && item.expects.length > 0))
+})
 
 test('successful QA advances the transcript handoff and prepares only the peer slot', async () => {
   const repository = createRepository()
