@@ -103,6 +103,13 @@ export class SessionController {
         merged = { ...merged, ...partial }
         this.events.publish({ type: 'qa.partial', sessionId, runId, slot, partial })
       }
+      // Some structured-output providers serialize ignore as empty strings.
+      // Normalize that transport detail before applying the strict domain schema.
+      if (merged.status === 'ignore') {
+        merged.question = null
+        merged.answer = null
+        merged.sources = []
+      }
       const result = qaResultSchema.parse(merged)
       this.sessions.completeRun(sessionId, slot, runId, result, snapshotVersion, this.now())
       this.sessions.advanceAgentHistory(sessionId, slot, snapshotVersion, this.now())
