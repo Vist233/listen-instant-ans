@@ -7,8 +7,7 @@
     "check": "tsc --noEmit",
     "test": "tsx --test --test-timeout=20000 --test-force-exit test/**/*.test.ts",
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts --open",
-    "cli": "tsx src/cli.ts"
+    "start": "tsx src/server.ts --open"
   },
   "dependencies": {
     "@listen-instant-ans/contracts": "file:../../packages/contracts",

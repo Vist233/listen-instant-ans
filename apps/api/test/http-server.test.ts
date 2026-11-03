@@ -122,21 +122,22 @@ test('starting to listen without Aliyun credentials explains what is missing', a
 test('listening can be started and stopped through the runtime manager', async () => {
   const calls: string[] = []
   const app = createTestApp(new ScriptedRunner(() => say('-')), {
-    voiceSessionFactory: (_sessionId, device) => ({
-      start: async () => { calls.push(`start ${device}`) },
+    voiceSessionFactory: (_sessionId, name) => ({
+      start: async () => { calls.push(`start ${name}`) },
       stop: async () => { calls.push('stop') },
+      pushAudio: () => undefined,
     }),
   })
   await withServer(app, async (base) => {
     const { body: session } = await call(base, '/sessions', 'POST', {})
     const stream = waitFor(app.events, (event) => event.type === 'listening.stopped')
-    const started = await call(base, `/sessions/${session.id}/listening/start`, 'POST', { microphoneDevice: '3' })
+    const started = await call(base, `/sessions/${session.id}/listening/start`, 'POST', { microphoneDevice: 'USB 麦克风' })
     assert.equal(started.body.listening, true)
     assert.equal((await call(base, `/sessions/${session.id}/listening/start`, 'POST', {})).status, 400)
     const stopped = await call(base, `/sessions/${session.id}/listening/stop`, 'POST', {})
     assert.equal(stopped.body.listening, false)
     await stream
-    assert.deepEqual(calls, ['start 3', 'stop'])
+    assert.deepEqual(calls, ['start USB 麦克风', 'stop'])
   })
 })
 
@@ -211,18 +212,6 @@ test('saving the Aliyun settings is enough for listening to try to start, with n
   }
 })
 
-test('devices: the list from the microphone lookup is returned with its error', async () => {
-  const devices = [{ id: '0', name: 'MacBook Air Microphone' }]
-  const app = createTestApp(new ScriptedRunner(() => say('-')), { microphones: async () => ({ devices }) })
-  await withServer(app, async (base) => {
-    assert.deepEqual((await call(base, '/devices')).body, { devices })
-  })
-  const broken = createTestApp(new ScriptedRunner(() => say('-')), { microphones: async () => ({ devices: [], error: '没有找到 ffmpeg' }) })
-  await withServer(broken, async (base) => {
-    assert.deepEqual((await call(base, '/devices')).body, { devices: [], error: '没有找到 ffmpeg' })
-  })
-})
-
 function rawRequest(base: string, path: string, method: string, headers: Record<string, string>, body?: string): Promise<number> {
   const url = new URL(base)
   return new Promise((resolve, reject) => {
@@ -263,4 +252,71 @@ test('security: an oversized body is rejected', async () => {
     const huge = JSON.stringify({ mimo: { apiKey: 'x'.repeat(100_000) } })
     assert.equal((await call(base, '/settings', 'PUT', JSON.parse(huge))).status, 400)
   })
+})
+
+test('audio: chunks posted by the page reach the listening session, in order', async () => {
+  const received: number[][] = []
+  const app = createTestApp(new ScriptedRunner(() => say('-')), {
+    voiceSessionFactory: () => ({ start: async () => undefined, stop: async () => undefined, pushAudio: (chunk) => { received.push([...chunk]) } }),
+  })
+  await withServer(app, async (base) => {
+    const { body: session } = await call(base, '/sessions', 'POST', {})
+    const post = (bytes: number[]) => fetch(`${base}/sessions/${session.id}/audio`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Uint8Array(bytes) })
+    const early = await post([1])
+    assert.equal(early.status, 400)
+    assert.match((await early.json()).error, /not listening/)
+    await call(base, `/sessions/${session.id}/listening/start`, 'POST', {})
+    assert.equal((await post([1, 2, 3])).status, 204)
+    assert.equal((await post([4, 5])).status, 204)
+    assert.deepEqual(received, [[1, 2, 3], [4, 5]])
+    const huge = await fetch(`${base}/sessions/${session.id}/audio`, { method: 'POST', body: new Uint8Array(70_000) })
+    assert.equal(huge.status, 400)
+    assert.equal((await fetch(`${base}/sessions/nope/audio`, { method: 'POST', body: new Uint8Array(1) })).status, 400)
+  })
+})
+
+test('audio: a page on another site cannot feed audio', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')), {
+    voiceSessionFactory: () => ({ start: async () => undefined, stop: async () => undefined, pushAudio: () => assert.fail('must not be called') }),
+  })
+  await withServer(app, async (base) => {
+    const { body: session } = await call(base, '/sessions', 'POST', {})
+    await call(base, `/sessions/${session.id}/listening/start`, 'POST', {})
+    assert.equal(await rawRequest(base, `/sessions/${session.id}/audio`, 'POST', { origin: 'https://evil.example.com' }, 'x'), 403)
+  })
+})
+
+test('stopAll ends every recording', async () => {
+  const stopped: string[] = []
+  const app = createTestApp(new ScriptedRunner(() => say('-')), {
+    voiceSessionFactory: (sessionId) => ({ start: async () => undefined, stop: async () => { stopped.push(sessionId) }, pushAudio: () => undefined }),
+  })
+  await withServer(app, async (base) => {
+    const first = (await call(base, '/sessions', 'POST', {})).body.id
+    const second = (await call(base, '/sessions', 'POST', {})).body.id
+    await call(base, `/sessions/${first}/listening/start`, 'POST', {})
+    await call(base, `/sessions/${second}/listening/start`, 'POST', {})
+    await app.runtime.stopAll()
+    assert.deepEqual(stopped.sort(), [first, second].sort())
+    assert.equal(app.runtime.isListening(first) || app.runtime.isListening(second), false)
+    await app.runtime.stopAll()
+  })
+})
+
+test('a missing page file is a clean 404, leaks no path, and the server keeps working', async () => {
+  const app = createTestApp(new ScriptedRunner(() => say('-')))
+  const server: Server = createHttpServer(app, join(import.meta.dirname, 'no-such-folder'))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  try {
+    const page = await fetch(`${base}/`)
+    assert.equal(page.status, 404)
+    const text = await page.text()
+    assert.doesNotMatch(text, /no-such-folder|ENOENT/)
+    assert.equal((await fetch(`${base}/app.js`)).status, 404)
+    assert.deepEqual(await (await fetch(`${base}/health`)).json(), { ok: true })
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  }
 })

@@ -27,6 +27,8 @@ h2 { margin: 0; }
 .qa-question { font-weight: 700; }
 .qa-answer { margin-top: 8px; line-height: 1.65; }
 
+.meter { width: 120px; height: 8px; margin-bottom: 14px; background: #e3e0d8; }
+#meter-bar { width: 0; height: 100%; background: #191816; transition: width .08s linear; }
 label { display: grid; gap: 6px; font-size: .8rem; color: #706d66; }
 input, select, button { font: inherit; border-radius: 0; border: 1px solid #8c887f; padding: 10px 12px; background: #fffefa; color: inherit; }
 select { min-width: 240px; max-width: 100%; }

@@ -10,6 +10,9 @@ const STATIC_FILES: Record<string, { file: string; type: string }> = {
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+  '/capture.js': { file: 'capture.js', type: 'text/javascript; charset=utf-8' },
+  '/pcm.js': { file: 'pcm.js', type: 'text/javascript; charset=utf-8' },
+  '/pcm-worklet.js': { file: 'pcm-worklet.js', type: 'text/javascript; charset=utf-8' },
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -23,6 +26,17 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 
 const MAX_BODY_BYTES = 64 * 1024
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+async function readBytes(request: IncomingMessage): Promise<Uint8Array> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    size += (chunk as Buffer).length
+    if (size > MAX_BODY_BYTES) throw new Error('Request body is too large.')
+    chunks.push(chunk as Buffer)
+  }
+  return new Uint8Array(Buffer.concat(chunks))
+}
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
   let body = ''
@@ -74,10 +88,6 @@ export function createHttpServer(app: Application, webRoot: string): Server {
         sendJson(response, 200, { ok: true })
         return
       }
-      if (method === 'GET' && path === '/devices') {
-        sendJson(response, 200, await app.microphones())
-        return
-      }
       if (method === 'GET' && path === '/settings') {
         sendJson(response, 200, app.settings.status())
         return
@@ -97,7 +107,7 @@ export function createHttpServer(app: Application, webRoot: string): Server {
         sendJson(response, 200, sessions.list().map((info) => view(info.id)))
         return
       }
-      const match = path.match(/^\/sessions\/([^/]+)(?:\/(timeline|listening\/start|listening\/stop|transcripts|events))?$/)
+      const match = path.match(/^\/sessions\/([^/]+)(?:\/(timeline|listening\/start|listening\/stop|transcripts|audio|events))?$/)
       if (match !== null) {
         const [, sessionId, action] = match
         if (method === 'GET' && action === undefined) {
@@ -111,16 +121,20 @@ export function createHttpServer(app: Application, webRoot: string): Server {
         if (method === 'POST' && action === 'listening/start') {
           const body = await readJson(request)
           sessions.get(sessionId)
-          const device = isRecord(body) && typeof body.microphoneDevice === 'string'
-            ? body.microphoneDevice
-            : process.env.LISTEN_INSTANT_ANS_AUDIO_DEVICE ?? '0'
-          await runtime.start(sessionId, device)
+          const name = isRecord(body) && typeof body.microphoneDevice === 'string' ? body.microphoneDevice : '麦克风'
+          await runtime.start(sessionId, name)
           sendJson(response, 200, view(sessionId))
           return
         }
         if (method === 'POST' && action === 'listening/stop') {
           await runtime.stop(sessionId)
           sendJson(response, 200, view(sessionId))
+          return
+        }
+        if (method === 'POST' && action === 'audio') {
+          runtime.pushAudio(sessionId, await readBytes(request))
+          response.writeHead(204)
+          response.end()
           return
         }
         if (method === 'POST' && action === 'transcripts') {
@@ -163,12 +177,22 @@ export function createHttpServer(app: Application, webRoot: string): Server {
       }
       const asset = method === 'GET' ? STATIC_FILES[path] : undefined
       if (asset !== undefined) {
+        // Read first: once the headers are out, a failed read could not be reported any more.
+        const body = await readFile(join(webRoot, asset.file)).catch(() => null)
+        if (body === null) {
+          sendJson(response, 404, { error: 'Not found.' })
+          return
+        }
         response.writeHead(200, { 'content-type': asset.type })
-        response.end(await readFile(join(webRoot, asset.file)))
+        response.end(body)
         return
       }
       sendJson(response, 404, { error: 'Not found.' })
     } catch (error) {
+      if (response.headersSent) {
+        response.destroy()
+        return
+      }
       const message = error instanceof Error ? error.message : 'Unexpected error.'
       if (error instanceof SettingsError) {
         sendJson(response, 400, { error: message, code: 'settings' })

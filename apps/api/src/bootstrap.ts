@@ -8,7 +8,7 @@ import { SessionController, type ControllerOptions } from './session/session-con
 import { openDatabase } from './storage/database.js'
 import { SessionRepository } from './storage/session-repository.js'
 import { AliyunRealtimeTranscriber } from './voice/aliyun-realtime-transcriber.js'
-import { FfmpegMicrophone, listMicrophones, type MicrophoneList } from './voice/ffmpeg-microphone.js'
+import { PushMicrophone } from './voice/push-microphone.js'
 
 export interface Application {
   readonly settings: SettingsStore
@@ -16,7 +16,6 @@ export interface Application {
   readonly sessions: SessionRepository
   readonly controller: SessionController
   readonly runtime: SessionRuntimeManager
-  readonly microphones: () => Promise<MicrophoneList>
 }
 
 /** Replacements for the parts that need the network or hardware, used by tests. */
@@ -27,7 +26,7 @@ export interface ApplicationOverrides {
   readonly databasePath?: string
   readonly runner?: QaRunner
   readonly voiceSessionFactory?: VoiceSessionFactory
-  readonly microphones?: () => Promise<MicrophoneList>
+  readonly audioIdleTimeoutMs?: number
   readonly controller?: ControllerOptions
 }
 
@@ -42,7 +41,7 @@ export function createApplication(overrides: ApplicationOverrides = {}): Applica
   const runner = overrides.runner ?? new ReloadableQaRunner(() => settings.current().mimo)
   const controller = new SessionController(sessions, runner, events, overrides.controller)
   const runtime: SessionRuntimeManager = new SessionRuntimeManager(
-    overrides.voiceSessionFactory ?? ((sessionId, microphoneDevice) => {
+    overrides.voiceSessionFactory ?? ((sessionId) => {
       const { aliyun } = settings.current()
       if (aliyun.appKey === undefined || aliyun.token === undefined) {
         throw new SettingsError('阿里云 AppKey 和 Token 未设置，请在“设置”里填写。')
@@ -50,9 +49,8 @@ export function createApplication(overrides: ApplicationOverrides = {}): Applica
       return new VoiceSession(
         sessionId,
         controller,
-        new FfmpegMicrophone(),
+        new PushMicrophone(overrides.audioIdleTimeoutMs),
         new AliyunRealtimeTranscriber({ appKey: aliyun.appKey, token: aliyun.token, endpoint: aliyun.endpoint }),
-        microphoneDevice,
         (error) => {
           events.publish({ type: 'listening.failed', sessionId, message: error.message })
           void runtime.stop(sessionId)
@@ -61,5 +59,5 @@ export function createApplication(overrides: ApplicationOverrides = {}): Applica
     }),
     events,
   )
-  return { settings, events, sessions, controller, runtime, microphones: overrides.microphones ?? listMicrophones }
+  return { settings, events, sessions, controller, runtime }
 }

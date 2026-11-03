@@ -10,6 +10,8 @@ class StubMicrophone implements Microphone {
   #audio: Array<(audio: Uint8Array) => void> = []
   #errors: Array<(error: Error) => void> = []
   start(): void { this.started = true }
+  pushed: Uint8Array[] = []
+  push(chunk: Uint8Array): void { this.pushed.push(chunk); this.emitAudio(chunk) }
   stop(): void { this.stopped = true }
   onAudio(listener: (audio: Uint8Array) => void): () => void { this.#audio.push(listener); return () => undefined }
   onError(listener: (error: Error) => void): () => void { this.#errors.push(listener); return () => undefined }
@@ -44,7 +46,7 @@ function setup() {
   const microphone = new StubMicrophone()
   const provider = new StubProvider()
   const fatal: Error[] = []
-  const session = new VoiceSession('s', app.controller, microphone, provider, '0', (error) => fatal.push(error))
+  const session = new VoiceSession('s', app.controller, microphone, provider, (error: Error) => fatal.push(error))
   return { app, microphone, provider, fatal, session }
 }
 
@@ -70,7 +72,7 @@ test('starting listening again on the same session continues the sequence instea
 
   const microphone = new StubMicrophone()
   const secondProvider = new StubProvider()
-  const second = new VoiceSession('s', app.controller, microphone, secondProvider, '0', () => undefined)
+  const second = new VoiceSession('s', app.controller, microphone, secondProvider, () => undefined)
   await second.start()
   secondProvider.emitFinal('第二场的一句')
   assert.deepEqual(app.sessions.transcripts('s').map((item) => [item.sequence, item.text]), [[1, '第一场的一句'], [2, '第二场的一句']])
@@ -111,4 +113,20 @@ test('stop silences the microphone, finalizes and closes the transcriber, and st
   microphone.emitError(new Error('late noise'))
   assert.equal(provider.sent.length, 0)
   assert.deepEqual(fatal, [])
+})
+
+test('audio pushed from the browser reaches the transcriber', async () => {
+  const { microphone, provider, session } = setup()
+  await session.start()
+  session.pushAudio(new Uint8Array([5, 6]))
+  assert.deepEqual(microphone.pushed, [new Uint8Array([5, 6])])
+  assert.deepEqual(provider.sent, [new Uint8Array([5, 6])])
+})
+
+test('a microphone that cannot take pushed audio refuses it', async () => {
+  const { app } = setup()
+  const stubWithoutPush: Microphone = { start() {}, stop() {}, onAudio: () => () => undefined, onError: () => () => undefined }
+  const session = new VoiceSession('s', app.controller, stubWithoutPush, new StubProvider(), () => undefined)
+  await session.start()
+  assert.throws(() => session.pushAudio(new Uint8Array([1])), /does not take audio/)
 })

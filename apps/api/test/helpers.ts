@@ -4,7 +4,6 @@ import { createApplication, type Application } from '../src/bootstrap.js'
 import type { Tuning } from '../src/config/tuning.js'
 import type { EventHub } from '../src/events/event-hub.js'
 import type { VoiceSessionFactory } from '../src/runtime/session-runtime-manager.js'
-import type { MicrophoneList } from '../src/voice/ffmpeg-microphone.js'
 
 export type Script = (input: QaRunInput, call: number, signal: AbortSignal) => AsyncIterable<string>
 
@@ -55,7 +54,7 @@ export interface TestAppOptions {
   readonly now?: () => number
   readonly autoStartLanes?: boolean
   readonly voiceSessionFactory?: VoiceSessionFactory
-  readonly microphones?: () => Promise<MicrophoneList>
+  readonly audioIdleTimeoutMs?: number
   readonly env?: NodeJS.ProcessEnv
 }
 
@@ -66,7 +65,7 @@ export function createTestApp(runner: QaRunner, options: TestAppOptions = {}): A
     runner,
     databasePath: ':memory:',
     voiceSessionFactory: options.voiceSessionFactory,
-    microphones: options.microphones,
+    audioIdleTimeoutMs: options.audioIdleTimeoutMs,
     controller: { autoStartLanes: options.autoStartLanes ?? false, now: options.now, tuning: options.tuning },
   })
 }

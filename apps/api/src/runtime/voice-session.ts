@@ -1,12 +1,13 @@
-import type { MicrophoneConfig } from '../voice/ffmpeg-microphone.js'
 import type { VoiceProvider } from '../voice/voice-provider.js'
 import type { SessionController } from '../session/session-controller.js'
 
 export interface Microphone {
-  start(config: MicrophoneConfig): void
+  start(): void
   stop(): void
   onAudio(listener: (audio: Uint8Array) => void): () => void
   onError(listener: (error: Error) => void): () => void
+  /** Present when the audio comes from the browser. */
+  push?(chunk: Uint8Array): void
 }
 
 /** Wires one microphone to one transcriber and feeds final transcripts to the controller. */
@@ -19,7 +20,6 @@ export class VoiceSession {
     private readonly controller: SessionController,
     private readonly microphone: Microphone,
     private readonly transcriber: VoiceProvider,
-    private readonly microphoneDevice: string,
     /** Called once when listening cannot continue (microphone died, connection lost). */
     private readonly onFatal: (error: Error) => void,
   ) {}
@@ -44,7 +44,13 @@ export class VoiceSession {
     this.microphone.onError((error) => this.fail(error))
     this.transcriber.onError((error) => this.fail(error))
     await this.transcriber.open({ language: 'zh-CN', sampleRateHz: 16_000, endpointingMs: 800 })
-    this.microphone.start({ device: this.microphoneDevice, sampleRateHz: 16_000 })
+    this.microphone.start()
+  }
+
+  /** Audio chunk from the browser: 16 kHz, mono, 16-bit PCM. */
+  pushAudio(chunk: Uint8Array): void {
+    if (this.microphone.push === undefined) throw new Error('This session does not take audio from the browser.')
+    this.microphone.push(chunk)
   }
 
   async stop(): Promise<void> {

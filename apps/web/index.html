@@ -25,6 +25,8 @@
             </label>
             <button id="start" class="primary">开始录音</button>
             <button id="stop" class="primary" disabled>停止录音</button>
+            <button id="refresh-devices" class="secondary" hidden>重新检测</button>
+            <div class="meter" id="meter" role="meter" aria-label="音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div id="meter-bar"></div></div>
           </div>
           <p id="status" class="status" role="status">点“开始录音”就会新建一个会话。</p>
           <section class="column" aria-labelledby="transcript-heading">
