@@ -8,11 +8,18 @@
   ],
   "scripts": {
     "start": "npm run start -w @listen-instant-ans/api",
-    "build": "npm run build --workspaces --if-present",
-    "check": "npm run check --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "check": "npm run check --workspaces --if-present && tsc --noEmit",
+    "test": "npm run test --workspaces --if-present",
+    "test:build": "tsx --test --test-timeout=600000 --test-force-exit test/build/*.test.ts",
+    "build:web": "node scripts/build-web.mjs",
+    "build:desktop": "node scripts/build-desktop.mjs"
   },
   "engines": {
     "node": ">=24"
+  },
+  "description": "听老师讲课，几秒内给出问题的要点答案。浏览器版和 macOS 桌面版。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vist233/listen-instant-ans.git"
   }
 }

@@ -1,0 +1,15 @@
+{
+  "name": "@listen-instant-ans/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test --test-timeout=30000 --test-force-exit test/*.test.ts",
+    "build": "node ../../scripts/build-desktop.mjs"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  }
+}

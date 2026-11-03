@@ -5,3 +5,7 @@ data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.dmg
+.DS_Store
+.claude/
+*.log
