@@ -123,7 +123,7 @@ export class SessionController {
         timedOut = true
         controller.abort()
         void run.catch(() => undefined)
-        this.sessions.skipRun(sessionId, slot, runId, snapshotVersion, this.now())
+        this.sessions.skipRun(sessionId, slot, runId, this.now())
         this.#lastSlot.set(sessionId, slot)
         this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: 'Agent timed out after 15 seconds and was skipped.' })
         return

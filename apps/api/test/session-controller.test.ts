@@ -106,3 +106,21 @@ test('each agent receives its prior history, all missing speech, and every peer 
   assert.equal(repository.get('session-3').historyTranscriptVersionA, 1)
   assert.equal(repository.get('session-3').historyTranscriptVersionB, 1)
 })
+
+test('a timed-out run is cancelled without consuming its input speech', () => {
+  const repository = createRepository()
+  repository.create('session-4', 'zh-CN', 0)
+  for (const sequence of [1, 2, 3]) {
+    repository.appendTranscript('session-4', {
+      sequence, startedAtMs: sequence, endedAtMs: sequence, text: `语音 ${sequence}`, confidence: 1,
+    }, sequence)
+  }
+  repository.advanceAgentHistory('session-4', 'A', 1, 10)
+  repository.markRunStarted('session-4', 'A', 'run-timeout', 3, 11)
+  repository.skipRun('session-4', 'A', 'run-timeout', 12)
+
+  const state = repository.get('session-4')
+  assert.equal(state.historyTranscriptVersionA, 1)
+  assert.equal(state.activeAgent, null)
+  assert.deepEqual(repository.listTranscriptsAfter('session-4', state.historyTranscriptVersionA).map((item) => item.sequence), [2, 3])
+})
