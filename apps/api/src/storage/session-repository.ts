@@ -206,13 +206,20 @@ export class SessionRepository {
     return this.get(sessionId)
   }
 
-  skipRun(sessionId: string, slot: 'A' | 'B', runId: string, nowMs: number): SessionState {
+  skipRun(
+    sessionId: string,
+    slot: 'A' | 'B',
+    runId: string,
+    nowMs: number,
+    message = 'Timed out after 15 seconds; skipped.',
+  ): SessionState {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.database.prepare(`UPDATE agent_runs SET status = 'cancelled', ended_at_ms = ?, error_message = ? WHERE id = ?`)
-        .run(nowMs, 'Timed out after 15 seconds; skipped.', runId)
+        .run(nowMs, message, runId)
       this.database.prepare(`
-        UPDATE sessions SET active_agent = NULL, last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
+        UPDATE sessions SET active_agent = NULL, consecutive_empty_qa = consecutive_empty_qa + 1,
+          last_completed_slot = ?, updated_at_ms = ? WHERE id = ?
       `).run(slot, nowMs, sessionId)
       const state = this.get(sessionId)
       this.database.exec('COMMIT')

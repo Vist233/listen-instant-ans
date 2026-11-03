@@ -132,5 +132,10 @@ test('a timed-out run is cancelled without consuming its input speech', () => {
   const state = repository.get('session-4')
   assert.equal(state.historyTranscriptVersionA, 1)
   assert.equal(state.activeAgent, null)
+  assert.equal(state.consecutiveEmptyQa, 1)
   assert.deepEqual(repository.listTranscriptsAfter('session-4', state.historyTranscriptVersionA).map((item) => item.sequence), [2, 3])
+  assert.deepEqual(
+    decideNextTurn(state, state.lastCompletedSlot, 12),
+    { slot: 'B', delayMs: EMPTY_QA_MINIMUM_INTERVAL_MS - 1 },
+  )
 })

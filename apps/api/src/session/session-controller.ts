@@ -135,8 +135,9 @@ export class SessionController {
       this.events.publish({ type: 'qa.completed', sessionId, runId, slot, result })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.sessions.failRun(sessionId, runId, message, this.now())
-      this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message })
+      this.sessions.skipRun(sessionId, slot, runId, this.now(), `Unusable structured QA: ${message}`)
+      this.#lastSlot.set(sessionId, slot)
+      this.events.publish({ type: 'agent.failed', sessionId, runId, slot, message: `Skipped unusable structured QA: ${message}` })
     } finally {
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
       this.#activeRuns.delete(sessionId)
