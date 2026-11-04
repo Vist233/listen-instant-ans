@@ -1,10 +1,10 @@
-# Listen Instant Ans
+# Listen Instant Ans（听课即答）
 
 [![CI](https://github.com/Vist233/listen-instant-ans/actions/workflows/ci.yml/badge.svg)](https://github.com/Vist233/listen-instant-ans/actions/workflows/ci.yml)
 
-**Listen Instant Ans（听课即答）是一个开源的课堂实时问答工具：** 它通过麦克风持续听写老师讲课（阿里云实时语音识别），在老师提出问题后几秒内，用 MiMo 大模型（`mimo-v2.6-flash`）给出**只含核心要点**的答案（每条不超过 100 字）。提供 macOS 桌面版（`.dmg`）和浏览器版，全部在你自己的电脑上运行，密钥只保存在本机。
+**简体中文** | [English](README.en.md)
 
-**In English:** Listen Instant Ans is an open-source (MIT) live classroom Q&A assistant. It transcribes a lecture from your microphone in real time (Aliyun speech recognition), detects the questions the teacher asks, and shows a concise answer (at most 100 Chinese characters) within seconds using the MiMo LLM. It ships as a macOS desktop app (`.dmg`, arm64 and x64) and a local browser app (Node.js 24+). Audio and keys stay on your machine; the UI is in Chinese.
+Listen Instant Ans 是一个开源的课堂实时问答工具：通过麦克风持续听写老师讲课，老师一提问，几秒内就显示**只含核心要点**的答案（每条不超过 100 字）。提供 macOS 桌面版和浏览器版，全部在你自己的电脑上运行，密钥只保存在本机。
 
 ## 一眼看懂
 
@@ -19,11 +19,31 @@
 | 费用 | 软件免费（MIT）；MiMo 与阿里云按各自规则计费 |
 | 技术栈 | TypeScript、Node.js 24（`node:sqlite`）、Mastra、Electron、原生 JS 前端 |
 
-关键词：课堂实时问答、语音转文字、实时字幕、听课助手、AI 课堂助手、老师提问自动回答、Aliyun ASR、MiMo、Mastra、Electron、macOS。
+## 常见问题
 
-左侧是历史会话；右侧左栏是麦克风选择、开始/停止录音和**语音转录**，右栏是**问答**。转录和问答都是最新的在最上面。
+**它是什么？** 一个本地运行的课堂实时问答工具：听老师讲课，老师一提问，几秒内显示要点答案。
+
+**需要联网和付费吗？** 需要联网调用两项云服务：阿里云智能语音交互（语音转文字）和小米 MiMo（生成答案），都按各自规则计费；本软件本身免费开源。
+
+**音频和密钥会上传到哪里？** 音频只发给阿里云做识别，不保存；密钥只存在本机 `~/.listen-instant-ans/settings.json`，页面和日志不显示完整密钥。
+
+**支持 Windows / Linux 吗？** 目前桌面版只有 macOS。浏览器版在任何装有 Node.js 24+ 的系统上可用。
+
+**答案多久出来？** 问题一写完就显示；两条错开的车道每 5 秒就有一次新请求，通常几秒内能看到答案。具体时间取决于网络和模型服务。
+
+**答案会不会很长？** 不会：每条答案不超过 100 字，只给核心要点。
+
+**能回答最新新闻、价格吗？** 不能，没有搜索功能，模型会说明无法核实。
+
+**为什么 macOS 第一次打开会被拦？** 应用没有付费的 Apple 开发者签名，按下文步骤放行一次即可。
+
+**可以换成别的模型或语音服务吗？** 目前内置 MiMo 和阿里云；代码按模块拆分（`apps/api/src/agent`、`apps/api/src/voice`），可自行扩展。
+
+---
 
 ## 怎么用
+
+界面：左侧是历史会话；右侧左栏是麦克风选择、开始/停止录音和**语音转录**，右栏是**问答**。转录和问答都是最新的在最上面。
 
 你需要两个账号的密钥（各自计费）：
 
@@ -112,26 +132,6 @@ npm run build:desktop            # -> dist/desktop/*.dmg  （加 -- --arch=x64 �
 - 同一道题换了说法，偶尔会被两条车道各答一次（去重的阈值偏保守，宁可多显示一条，也不误删真正的新问题）。
 - 老师隔很久重新提问同一个问题时，模型可能因为“已经答过”而不再回答。
 - 没有搜索功能：涉及最新新闻、价格等的问题，模型会说明无法核实。
-
-## 常见问题
-
-**它是什么？** 一个本地运行的课堂实时问答工具：听老师讲课，老师一提问，几秒内显示要点答案。
-
-**需要联网和付费吗？** 需要联网调用两项云服务：阿里云智能语音交互（语音转文字）和小米 MiMo（生成答案），都按各自规则计费；本软件本身免费开源。
-
-**音频和密钥会上传到哪里？** 音频只发给阿里云做识别，不保存；密钥只存在本机 `~/.listen-instant-ans/settings.json`，页面和日志不显示完整密钥。
-
-**支持 Windows / Linux 吗？** 目前桌面版只有 macOS。浏览器版在任何装有 Node.js 24+ 的系统上可用。
-
-**答案多久出来？** 问题一写完就显示；两条错开的车道每 5 秒就有一次新请求，通常几秒内能看到答案。具体时间取决于网络和模型服务。
-
-**答案会不会很长？** 不会：每条答案不超过 100 字，只给核心要点。
-
-**能回答最新新闻、价格吗？** 不能，没有搜索功能，模型会说明无法核实。
-
-**为什么 macOS 第一次打开会被拦？** 应用没有付费的 Apple 开发者签名，按上文步骤放行一次即可。
-
-**可以换成别的模型或语音服务吗？** 目前内置 MiMo 和阿里云；代码按模块拆分（`apps/api/src/agent`、`apps/api/src/voice`），可自行扩展。
 
 ## 许可证
 
